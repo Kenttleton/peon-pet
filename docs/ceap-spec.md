@@ -611,10 +611,47 @@ own follow-on brainstorm before implementation:
    character (CEAP) packs, and CEAP+CESP bundles together, with pets
    discoverable under a `pets/` path convention parallel to sound packs'
    `sounds/`. The current `PeonPing/registry` schema
-   (`registry-v1.schema.json`) has no `type` discriminator and
-   `additionalProperties: false` everywhere, so this requires a real
-   `registry-v2` proposal against that repo — separate governance, separate
-   design, not peon-pet's to decide unilaterally.
+   (`registry-v1.schema.json`) has no way to say a `source_repo` provides
+   sound, animation, or both, and `additionalProperties: false` everywhere
+   means it can't just grow a field.
+
+   A `registry-v2` proposal against that repo (separate governance,
+   separate design, not peon-pet's to decide unilaterally) should avoid a
+   `type: "sound" | "animation" | "both"` discriminator — that's a second
+   place to keep in sync with what the repo actually contains, and it's
+   redundant with the fields already needed either way. Cleaner: nest the
+   format-specific fields (CESP's `categories`/`sound_count`, CEAP's own
+   category list) under two independently-optional sub-objects, `sound` and
+   `animation`, each with its own `source_path`/`manifest_sha256` pointing
+   at that format's `openpeon.json` within the repo (they disambiguate via
+   `cesp_version`/`ceap_version` same as always, and MAY live at different
+   paths in one repo). A pack entry's capabilities are then implicit in
+   which of the two sub-objects is present — a sound-only pack omits
+   `animation`, an animation-only pack omits `sound`, and a full Character
+   bundle (see [Terminology](#terminology)) has both, all without a
+   separate flag that could drift from reality:
+
+   ```json
+   {
+     "name": "capybara",
+     "display_name": "Capybara",
+     "version": "1.0.0",
+     "trust_tier": "community",
+     "source_repo": "someone/peonping-capybara",
+     "source_ref": "v1.0.0",
+     "sound": {
+       "categories": ["session.start", "task.complete"],
+       "sound_count": 12,
+       "source_path": "sounds/",
+       "manifest_sha256": "..."
+     },
+     "animation": {
+       "categories": ["sleeping", "typing", "waking", "celebrate"],
+       "source_path": "pets/",
+       "manifest_sha256": "..."
+     }
+   }
+   ```
 
 ## Out of Scope
 
