@@ -653,6 +653,33 @@ own follow-on brainstorm before implementation:
    }
    ```
 
+   The schema (`registry-v1.schema.json`) is only one of three places that
+   would need this split — inspecting `PeonPing/registry` directly shows
+   the other two:
+
+   - `.github/workflows/validate-index.yml` hardcodes its own
+     `REQUIRED_FIELDS` list (`name`, `display_name`, `version`,
+     `trust_tier`, `categories`, `language`, `sound_count`, `source_repo`,
+     `source_ref`, `source_path`) as flat, unconditional per-pack
+     requirements, duplicating the schema rather than reading it, and
+     already drifts from it (`source_path` is required here but not in the
+     schema). This would need to become "require `sound` or `animation`,
+     and validate each sub-object's own required fields only when that
+     sub-object is present" instead of one flat list.
+   - `backfill-quality.yml` downloads each changed pack's tarball straight
+     from `source_repo`@`source_ref`/`source_path` and runs
+     `.github/scripts/quality-check.py` against the extracted files to set
+     the CI-owned `quality` tier. That script is audio-specific — an
+     analogous animation quality check (frame-count/dimension consistency,
+     transparency, square frames) would be new work, not a schema change,
+     and the workflow would need to dispatch to the right checker per
+     sub-object rather than assuming every pack is sound.
+
+   None of this is peon-pet's call to make — it belongs in a `registry-v2`
+   proposal against `PeonPing/registry` itself — but the path forward is
+   concrete enough to scope: a schema change, a validation-workflow change,
+   and a new quality-check script, not just "add a field."
+
 ## Out of Scope
 
 - The `main.js`/`package.json` version bumps (electron/three/canvas/jest)
