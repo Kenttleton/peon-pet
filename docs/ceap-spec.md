@@ -1,0 +1,449 @@
+# CEAP — Coding Event Animation Pack — v1.0
+
+**Status:** Proposal, for review
+**Companion to:** [CESP](https://openpeon.com/spec) (Coding Event Sound Pack), under the OpenPeon umbrella
+
+## Overview
+
+peon-pet's character visuals are currently hardcoded: a `BUNDLED_CHARS`
+object in `main.js` maps a fixed list of filenames per character (`orc`,
+`capybara`, `hello-kitty`), and the animation timing — which atlas row is
+`typing`, how many frames, what fps — is duplicated as a hardcoded
+`ANIM_CONFIG` object in both `lib/anim-state.js` and `renderer/app.js`.
+Adding a new character means editing JavaScript in three places and matching
+an undocumented 6×6 grid exactly.
+
+CEAP defines a manifest format — modeled directly on CESP's proven design —
+that makes a character pack self-describing: what animations it provides,
+where the frames live, and how they're timed. peon-pet reads the manifest
+instead of consulting a hardcoded map.
+
+Where CESP packages sounds per event category, CEAP packages animations per
+event category. **"Character"** is reserved as the umbrella term for a CEAP
+pack optionally paired with a CESP pack (see [Future Work](#future-work)) —
+not the name of this spec itself.
+
+The key words "MUST", "MUST NOT", "SHOULD", "SHOULD NOT", and "MAY" in this
+document are to be interpreted as described in RFC 2119.
+
+Concretely reused from CESP's design:
+
+- Manifest filename: **`openpeon.json`**, same as CESP — one filename works
+  for both spec types, disambiguated by the `ceap_version` vs `cesp_version`
+  key present in the file.
+- Pack directory convention: `~/.openpeon/pets/<name>/`, mirroring CESP's
+  `~/.openpeon/packs/<name>/`.
+- Field naming conventions (`name`, `display_name`, `author`, `license`,
+  `version`) copied as-is from CESP for consistency across the OpenPeon
+  ecosystem.
+
+Deliberately **not** reused in v1.0 (see [Future Work](#future-work)):
+
+- Multiple variants per category with no-immediate-repeat selection (CESP's
+  `sounds: [...]` array + `last_played` tracking).
+- Registry integration (CESP packs are listed in `PeonPing/registry`; no
+  equivalent exists for CEAP yet).
+- Cross-referencing a CESP pack from a CEAP pack (a "Character" bundle).
+
+## Terminology
+
+Four words that have been used interchangeably up to now, disambiguated
+going forward:
+
+| Term | Meaning |
+|---|---|
+| **Pet** | Product-level term for the on-screen Electron app/entity. The app is "Peon Pet." |
+| **Character** | A selectable identity for the pet (orc, capybara, hello-kitty, ...). Matches the existing `--character` flag, `char` variable, and `characters/` directory in `main.js`. In the OpenPeon umbrella sense, also the term for a CEAP+CESP bundle (see [Future Work](#future-work)). |
+| **CEAP pack** | The installable/distributable unit this spec defines: a directory with an `openpeon.json` manifest plus its animation and asset files. One character is backed by one CEAP pack. |
+| **Animation** | A named category of movement (`sleeping`, `typing`, ...) and the frame data behind it — the thing CEAP's `categories` field describes. |
+| **Sprite** | The pixel-art image asset format itself (a strip or atlas PNG). An implementation detail of how an animation's frames are stored on disk — not a pack-level noun. |
+
+## Event Categories
+
+A CEAP pack MAY provide any subset of the following fixed categories. Any
+category it omits falls back to the default (`orc`) pack — see
+[Fallback Behavior](#fallback-behavior).
+
+| Category | Meaning |
+|---|---|
+| `sleeping` | Idle state. Loops indefinitely while nothing is active. |
+| `waking` | Transition out of `sleeping` when a session starts. |
+| `typing` | A session is actively working. |
+| `alarmed` | A session needs input (permission request, context compaction). |
+| `celebrate` | A session finished its task. |
+| `annoyed` | A tool call failed. |
+
+This set matches `EVENT_TO_ANIM` in `lib/session-tracker.js` exactly — see
+[Event Mapping](#event-mapping).
+
+## Manifest Format
+
+The manifest MUST be a file named `openpeon.json` at the root of the pack
+directory.
+
+### Required Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `ceap_version` | string | Spec version. MUST be `"1.0"` for this document. |
+| `name` | string | Machine-readable id. MUST match `^[a-z0-9][a-z0-9_-]{0,63}$` (the same pattern CESP's registry schema uses for sound packs). |
+| `display_name` | string | Human-readable name, 1–128 characters. |
+| `version` | string | The pack's own semantic version (e.g. `"1.0.0"`), independent of `ceap_version`. |
+
+A manifest MUST declare at least one of `categories` or `assets` — a pack
+MAY consist entirely of asset overrides (e.g. a borders-only cosmetic pack)
+with no `categories` block at all.
+
+### Recommended Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `author` | object | `{ name?: string, github?: string }`. |
+| `license` | string | SPDX identifier or free text. |
+
+### `categories`
+
+An object keyed by category name (see [Event Categories](#event-categories)
+— a validator MUST reject unknown keys). Each value describes a **single**
+animation (not an array — see [Future Work](#future-work)):
+
+```json
+"typing": {
+  "file": "sprite-atlas.png",
+  "row": 2,
+  "rows": 6,
+  "frames": 6,
+  "fps": 8,
+  "loop": false,
+  "loops": 3
+}
+```
+
+| Field | Required | Default | Description |
+|---|---|---|---|
+| `file` | yes | — | Path to the sprite sheet, relative to the pack directory. |
+| `row` | no | `0` | Which row of `file`'s grid this animation occupies. |
+| `rows` | no | `1` | Total row count in `file`'s grid. Authors doing one-file-per-category omit this (the default of `1` is correct). Authors sharing a single atlas across categories MUST set it explicitly on every category that references that file, and every entry sharing a `file` value MUST declare the same `rows` — a validator MUST reject a mismatch at load time. |
+| `frames` | yes | — | Column count / frame count in this row. |
+| `fps` | yes | — | Playback speed, in frames per second. |
+| `loop` | no | `false` | Whether the animation repeats indefinitely. Only `sleeping` SHOULD set this `true`. |
+| `loops` | no | player default | Only meaningful when `loop` is `false`: how many times to play before the player returns to `sleeping` (or `typing`, if a session is still active). |
+
+Both authoring styles are supported by the same schema:
+- **One atlas, many rows:** every category's `file` points at the same
+  image, differentiated by `row` + `rows`.
+- **One file per category:** every category's `file` is a distinct
+  single-row strip; `row` and `rows` are omitted (their defaults handle it).
+
+### `assets`
+
+An object keyed by a fixed set of non-animated asset roles — the same three
+non-atlas files a bundled character maps today:
+
+```json
+"assets": {
+  "dock-icon": { "file": "dock-icon.png" },
+  "borders":   { "file": "borders.png" },
+  "bg":        { "file": "bg.png" }
+}
+```
+
+| Key | Description |
+|---|---|
+| `dock-icon` | macOS dock icon while this character is active. |
+| `borders` | Decorative overlay drawn on top of the sprite. |
+| `bg` | Background texture drawn behind the sprite. |
+
+A pack MAY declare only the asset keys it overrides.
+
+## Directory Structure
+
+```
+~/.openpeon/pets/<name>/
+  openpeon.json
+  sprite-atlas.png       (or one file per category — author's choice)
+  borders.png            (optional)
+  bg.png                 (optional)
+  dock-icon.png          (optional)
+```
+
+- The manifest filename MUST be `openpeon.json`, disambiguated from a CESP
+  manifest by the presence of `ceap_version` rather than `cesp_version`.
+- User-installed packs live at `~/.openpeon/pets/<name>/` — the real home
+  directory, not an app-specific data directory — mirroring CESP's
+  `~/.openpeon/packs/<name>/`.
+- **Bundled defaults:** `orc`, `capybara`, and `hello-kitty` ship inside the
+  app package (under `renderer/assets/<name>/`), each with its own
+  `openpeon.json`, replacing today's hardcoded `BUNDLED_CHARS` object.
+  `orc` remains the default pack referenced by
+  [Fallback Behavior](#fallback-behavior).
+- **Migration:** on first launch after this change, if `~/.openpeon/pets/`
+  doesn't exist but the legacy `<userData>/characters/` directory (today's
+  install location, documented in `CONTRIBUTING.md`) does, peon-pet copies
+  existing custom character folders over once, synthesizing an
+  `openpeon.json` for them from the legacy `character.json` format. No user
+  action required; the legacy path is not written to going forward.
+
+## Fallback Behavior
+
+A pack is not required to provide every category or asset. Resolution order
+for any given category or asset key, at load time:
+
+1. The active pack's own manifest entry, if present.
+2. The default pack's (`orc`) manifest entry.
+
+This replaces today's `charMap[filename] || BUNDLED_CHARS.orc[filename] ||
+filename` fallback chain in `main.js` — same shape, now driven by manifest
+data per category/asset instead of a hardcoded per-filename map. The default
+pack MUST provide every fixed category and every asset a player requires to
+render (in practice: all three).
+
+## Animation Constraints
+
+| Constraint | Value |
+|---|---|
+| Format | PNG |
+| Transparency | RGBA recommended for anything layered over other art (sprite, borders) |
+| Frame shape | SHOULD be square, for consistent scaling, but this is not validated |
+
+A validator MUST reject a manifest whose `row` is not less than its `rows`,
+and MUST reject a `frames` or `fps` that is not a positive number.
+
+## Event Mapping
+
+Player applications map their own event vocabulary onto CEAP's fixed
+categories. peon-pet's mapping (`lib/session-tracker.js`):
+
+| Claude Code event | CEAP category |
+|---|---|
+| `SessionStart` | `waking` |
+| `UserPromptSubmit` | `typing` |
+| `Stop` | `celebrate` |
+| `PermissionRequest` | `alarmed` |
+| `PreCompact` | `alarmed` |
+| `PostToolUseFailure` | `annoyed` |
+
+## Player Behavior
+
+- A player MUST NOT switch into `waking` except from `sleeping` — a session
+  starting while the character is already awake SHOULD be ignored.
+- A player MUST play a non-looping category's frames once, then repeat them
+  `loops` times (player-chosen default, e.g. 3) before returning to
+  `sleeping`, or to `typing` if a session is still active by the time the
+  reaction finishes.
+- A player SHOULD return to `sleeping` after a period of inactivity
+  (peon-pet: 30 seconds) with no active session.
+- A player MUST resolve fallback per-category and per-asset independently,
+  per [Fallback Behavior](#fallback-behavior) — a partial pack MUST NOT be
+  rejected outright.
+
+## Worked Examples
+
+These show CEAP applied to peon-pet's three actual bundled characters,
+reorganized from today's flat `renderer/assets/*.png` files into per-pack
+directories. Dimensions are the real files in this repo today.
+
+### `orc` (default pack)
+
+Source atlas: `orc-sprite-atlas.png`, 4096×4096 — a 6×6 grid, one file
+shared across all 6 categories.
+
+```
+renderer/assets/orc/
+  openpeon.json
+  sprite-atlas.png   (today's orc-sprite-atlas.png, 4096x4096)
+  borders.png        (today's orc-borders.png)
+  bg.png             (today's bg-pixel.png)
+  dock-icon.png       (today's orc-dock-icon.png)
+```
+
+```json
+{
+  "ceap_version": "1.0",
+  "name": "orc",
+  "display_name": "Orc",
+  "version": "1.0.0",
+  "license": "CC-BY-NC-4.0",
+  "categories": {
+    "sleeping":  { "file": "sprite-atlas.png", "row": 0, "rows": 6, "frames": 6, "fps": 3, "loop": true },
+    "waking":    { "file": "sprite-atlas.png", "row": 1, "rows": 6, "frames": 6, "fps": 2, "loop": false, "loops": 1 },
+    "typing":    { "file": "sprite-atlas.png", "row": 2, "rows": 6, "frames": 6, "fps": 8 },
+    "alarmed":   { "file": "sprite-atlas.png", "row": 3, "rows": 6, "frames": 6, "fps": 8 },
+    "celebrate": { "file": "sprite-atlas.png", "row": 4, "rows": 6, "frames": 6, "fps": 8 },
+    "annoyed":   { "file": "sprite-atlas.png", "row": 5, "rows": 6, "frames": 6, "fps": 8 }
+  },
+  "assets": {
+    "dock-icon": { "file": "dock-icon.png" },
+    "borders":   { "file": "borders.png" },
+    "bg":        { "file": "bg.png" }
+  }
+}
+```
+
+The `fps`/`loop`/`loops` values above are copied verbatim from today's
+hardcoded `ANIM_CONFIG` in `renderer/app.js` — this manifest is a lossless
+description of orc's current behavior, not a change to it.
+
+### `capybara` (partial pack — no `bg` override)
+
+Source atlas: `capybara-sprite-atlas.png`, 2048×2048 — also a 6×6 grid.
+`BUNDLED_CHARS.capybara` has no `bg.png` entry today, so this manifest omits
+`bg` too — it falls back to `orc`'s background per
+[Fallback Behavior](#fallback-behavior).
+
+```
+renderer/assets/capybara/
+  openpeon.json
+  sprite-atlas.png   (today's capybara-sprite-atlas.png, 2048x2048)
+  borders.png        (today's capybara-borders.png)
+  dock-icon.png       (today's capybara-dock-icon.png)
+```
+
+```json
+{
+  "ceap_version": "1.0",
+  "name": "capybara",
+  "display_name": "Capybara",
+  "version": "1.0.0",
+  "categories": {
+    "sleeping":  { "file": "sprite-atlas.png", "row": 0, "rows": 6, "frames": 6, "fps": 3, "loop": true },
+    "waking":    { "file": "sprite-atlas.png", "row": 1, "rows": 6, "frames": 6, "fps": 2, "loop": false, "loops": 1 },
+    "typing":    { "file": "sprite-atlas.png", "row": 2, "rows": 6, "frames": 6, "fps": 8 },
+    "alarmed":   { "file": "sprite-atlas.png", "row": 3, "rows": 6, "frames": 6, "fps": 8 },
+    "celebrate": { "file": "sprite-atlas.png", "row": 4, "rows": 6, "frames": 6, "fps": 8 },
+    "annoyed":   { "file": "sprite-atlas.png", "row": 5, "rows": 6, "frames": 6, "fps": 8 }
+  },
+  "assets": {
+    "dock-icon": { "file": "dock-icon.png" },
+    "borders":   { "file": "borders.png" }
+  }
+}
+```
+
+Note `author`/`license` are omitted — this proposal makes no claim about
+authorship or license terms for a pre-existing bundled asset it didn't
+create; a real submission would fill these in per
+[CONTRIBUTING.md](../CONTRIBUTING.md).
+
+### `hello-kitty` (same shape as capybara)
+
+Source atlas: `hello-kitty-sprite-atlas.png`, 2048×2048 — same 6×6 grid,
+same partial-pack shape (no `bg` override):
+
+```
+renderer/assets/hello-kitty/
+  openpeon.json
+  sprite-atlas.png   (today's hello-kitty-sprite-atlas.png, 2048x2048)
+  borders.png        (today's hello-kitty-borders.png)
+  dock-icon.png       (today's hello-kitty-dock-icon.png)
+```
+
+```json
+{
+  "ceap_version": "1.0",
+  "name": "hello-kitty",
+  "display_name": "Hello Kitty",
+  "version": "1.0.0",
+  "categories": {
+    "sleeping":  { "file": "sprite-atlas.png", "row": 0, "rows": 6, "frames": 6, "fps": 3, "loop": true },
+    "waking":    { "file": "sprite-atlas.png", "row": 1, "rows": 6, "frames": 6, "fps": 2, "loop": false, "loops": 1 },
+    "typing":    { "file": "sprite-atlas.png", "row": 2, "rows": 6, "frames": 6, "fps": 8 },
+    "alarmed":   { "file": "sprite-atlas.png", "row": 3, "rows": 6, "frames": 6, "fps": 8 },
+    "celebrate": { "file": "sprite-atlas.png", "row": 4, "rows": 6, "frames": 6, "fps": 8 },
+    "annoyed":   { "file": "sprite-atlas.png", "row": 5, "rows": 6, "frames": 6, "fps": 8 }
+  },
+  "assets": {
+    "dock-icon": { "file": "dock-icon.png" },
+    "borders":   { "file": "borders.png" }
+  }
+}
+```
+
+### A hypothetical one-file-per-category pack
+
+To illustrate the other authoring style permitted by the same schema — no
+shared atlas, `row`/`rows` omitted entirely:
+
+```json
+{
+  "ceap_version": "1.0",
+  "name": "example-split-files",
+  "display_name": "Example (split files)",
+  "version": "1.0.0",
+  "categories": {
+    "sleeping": { "file": "sleeping.png", "frames": 4, "fps": 2, "loop": true },
+    "typing":   { "file": "typing.png",   "frames": 8, "fps": 10 }
+  },
+  "assets": {
+    "borders": { "file": "frame.png" }
+  }
+}
+```
+
+Here `sleeping.png` and `typing.png` are each a single-row strip; `row` and
+`rows` default to `0` and `1`, which is exactly what a single-row file
+needs.
+
+## Implementation Notes
+
+Flagged here for the reviewer's benefit — these affect effort estimation
+for adopting this spec, not the schema itself:
+
+- **Renderer texture loading changes.** `renderer/app.js` currently loads
+  exactly one texture (`peon-asset://sprite-atlas.png`). Because categories
+  can now point at different files, the renderer needs to load and cache
+  textures keyed by filename (at most 6 distinct files in v1.0 — one per
+  category, no variants yet) and swap `material.map` on animation switch,
+  recomputing UVs from that file's own `frames`/`rows` rather than the
+  current global `ATLAS_COLS`/`ATLAS_ROWS` constants.
+- **Single source of truth for animation config.** `lib/anim-state.js`
+  (currently dead code outside tests) becomes the actual shared module for
+  UV math, replacing the duplicated inline `ANIM_CONFIG` in
+  `renderer/app.js`. It should be parameterized by the resolved manifest
+  data instead of a hardcoded object. Note: `renderer/app.js` runs with
+  `contextIsolation: true, nodeIntegration: false`, so it cannot `require()`
+  a CommonJS module directly — sharing it means exposing it through
+  `preload.js`'s `contextBridge`, the same mechanism already used for IPC.
+- **`main.js` protocol handler.** `registerCharacterProtocol` keeps its job
+  (resolve a requested filename to an absolute path, custom-pack dir first,
+  then bundled), but the filename→path map it consults comes from parsing
+  the active pack's (and default pack's) `openpeon.json` instead of the
+  `BUNDLED_CHARS` literal.
+- **Migration.** A pre-CEAP custom character folder (`character.json`, no
+  `openpeon.json`) has no manifest to resolve against — a straight file
+  copy to `~/.openpeon/pets/` would leave it invisible under CEAP's
+  resolution rules, since CEAP has no filename-existence fallback the way
+  today's code does. Migration needs to synthesize an `openpeon.json` for
+  each copied legacy folder, applying the fixed 6×6 row layout
+  `CONTRIBUTING.md` already documents for `character.json`-based
+  submissions.
+
+## Future Work
+
+Captured now as intent, not designed in detail — each of these needs its
+own follow-on brainstorm before implementation:
+
+1. **Multiple variants per category + no-repeat selection.** Change each
+   category from a single object to an array of the same shape, and port
+   CESP's exact selection algorithm: candidates = all variants if only one
+   exists, else all variants except the last-played one; pick randomly;
+   remember the pick per category. Gives authors sound-pack-style variety
+   without over-scoping v1.0.
+2. **`bundled_sound_pack` field.** An optional manifest field naming a CESP
+   pack (by its existing registry `name`) that pairs with this character by
+   default, so an install flow can offer "install the matching sounds too."
+   Manifest-only; requires no registry change.
+3. **Registry integration.** A shared OpenPeon registry listing sound packs,
+   character (CEAP) packs, and CEAP+CESP bundles together, with pets
+   discoverable under a `pets/` path convention parallel to sound packs'
+   `sounds/`. The current `PeonPing/registry` schema
+   (`registry-v1.schema.json`) has no `type` discriminator and
+   `additionalProperties: false` everywhere, so this requires a real
+   `registry-v2` proposal against that repo — separate governance, separate
+   design, not peon-pet's to decide unilaterally.
+
+## Out of Scope
+
+- The `main.js`/`package.json` version bumps (electron/three/canvas/jest)
+  and the `peon-asset://` scheme's `corsEnabled: true` fix — already
+  written, uncommitted, shipping as their own unrelated PR.
