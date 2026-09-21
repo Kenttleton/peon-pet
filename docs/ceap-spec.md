@@ -36,11 +36,13 @@ Concretely reused from CESP's design:
 - Field naming conventions (`name`, `display_name`, `author`, `license`,
   `version`) copied as-is from CESP for consistency across the OpenPeon
   ecosystem.
+- Multiple variants per category with no-immediate-repeat selection —
+  CESP's `sounds: [...]` array plus its selection algorithm, ported
+  directly. See [`categories`](#categories) and [Player
+  Behavior](#player-behavior).
 
 Deliberately **not** reused in v1.0 (see [Future Work](#future-work)):
 
-- Multiple variants per category with no-immediate-repeat selection (CESP's
-  `sounds: [...]` array + `last_played` tracking).
 - Registry integration (CESP packs are listed in `PeonPing/registry`; no
   equivalent exists for CEAP yet).
 - Cross-referencing a CESP pack from a CEAP pack (a "Character" bundle).
@@ -104,35 +106,41 @@ with no `categories` block at all.
 ### `categories`
 
 An object keyed by category name (see [Event Categories](#event-categories)
-— a validator MUST reject unknown keys). Each value describes a **single**
-animation (not an array — see [Future Work](#future-work)):
+— a validator MUST reject unknown keys). Each value is a **non-empty array**
+of one or more variants — the same shape as CESP's `sounds: [...]` array.
+Most categories will declare exactly one variant; an array with more than
+one lets a pack offer several takes on the same animation, selected at
+random with no-immediate-repeat (see [Player
+Behavior](#player-behavior)):
 
 ```json
-"typing": {
-  "file": "sprite-atlas.png",
-  "row": 2,
-  "rows": 6,
-  "frames": 6,
-  "fps": 8,
-  "loop": false,
-  "loops": 3
-}
+"typing": [
+  { "file": "sprite-atlas.png", "row": 2, "rows": 6, "frames": 6, "fps": 8 }
+]
+```
+
+```json
+"typing": [
+  { "file": "typing-focused.png", "frames": 6, "fps": 8, "label": "focused" },
+  { "file": "typing-frantic.png", "frames": 6, "fps": 10, "label": "frantic" }
+]
 ```
 
 | Field | Required | Default | Description |
 |---|---|---|---|
 | `file` | yes | — | Path to the sprite sheet, relative to the pack directory. |
-| `row` | no | `0` | Which row of `file`'s grid this animation occupies. |
-| `rows` | no | `1` | Total row count in `file`'s grid. Authors doing one-file-per-category omit this (the default of `1` is correct). Authors sharing a single atlas across categories MUST set it explicitly on every category that references that file, and every entry sharing a `file` value MUST declare the same `rows` — a validator MUST reject a mismatch at load time. |
+| `row` | no | `0` | Which row of `file`'s grid this variant occupies. |
+| `rows` | no | `1` | Total row count in `file`'s grid. Authors doing one-file-per-variant omit this (the default of `1` is correct). Authors sharing a single atlas across variants/categories MUST set it explicitly on every entry that references that file, and every entry sharing a `file` value — across all categories and all variants — MUST declare the same `rows`; a validator MUST reject a mismatch at load time. |
 | `frames` | yes | — | Column count / frame count in this row. |
 | `fps` | yes | — | Playback speed, in frames per second. |
 | `loop` | no | `false` | Whether the animation repeats indefinitely. Only `sleeping` SHOULD set this `true`. |
 | `loops` | no | player default | Only meaningful when `loop` is `false`: how many times to play before the player returns to `sleeping` (or `typing`, if a session is still active). |
+| `label` | no | — | Free-text note identifying this variant to the author (e.g. in a review UI). Not shown to end users. |
 
 Both authoring styles are supported by the same schema:
-- **One atlas, many rows:** every category's `file` points at the same
+- **One atlas, many rows:** every variant's `file` points at the same
   image, differentiated by `row` + `rows`.
-- **One file per category:** every category's `file` is a distinct
+- **One file per variant:** every variant's `file` is a distinct
   single-row strip; `row` and `rows` are omitted (their defaults handle it).
 
 ### `assets`
@@ -192,6 +200,12 @@ for any given category or asset key, at load time:
 1. The active pack's own manifest entry, if present.
 2. The default pack's (`orc`) manifest entry.
 
+For `categories`, the entry at each tier is the whole variant array — a
+pack that declares a category is never merged variant-by-variant with the
+default pack's variants for that same category. Which single variant plays
+on a given transition is a separate, later decision — see [Player
+Behavior](#player-behavior).
+
 This replaces today's `charMap[filename] || BUNDLED_CHARS.orc[filename] ||
 filename` fallback chain in `main.js` — same shape, now driven by manifest
 data per category/asset instead of a hardcoded per-filename map. The default
@@ -237,6 +251,24 @@ categories. peon-pet's mapping (`lib/session-tracker.js`):
   per [Fallback Behavior](#fallback-behavior) — a partial pack MUST NOT be
   rejected outright.
 
+### Variant selection
+
+Every transition into a category picks exactly one variant from that
+category's resolved array, using CESP's own selection algorithm (ported
+directly, `peon.sh`):
+
+1. If the category has exactly one variant, use it.
+2. Otherwise, the candidate set is every variant **except** the one played
+   last time this category was entered (tracked in memory, per category,
+   since the player started — not persisted across restarts).
+3. Pick uniformly at random among the candidates.
+4. Remember the picked variant as "last played" for that category, for the
+   next time step 2 runs.
+
+A player MUST apply this algorithm to every category with more than one
+variant, and MUST NOT play the same variant twice in a row for a category
+that has an alternative available.
+
 ## Worked Examples
 
 These show CEAP applied to peon-pet's three actual bundled characters,
@@ -265,12 +297,12 @@ renderer/assets/orc/
   "version": "1.0.0",
   "license": "CC-BY-NC-4.0",
   "categories": {
-    "sleeping":  { "file": "sprite-atlas.png", "row": 0, "rows": 6, "frames": 6, "fps": 3, "loop": true },
-    "waking":    { "file": "sprite-atlas.png", "row": 1, "rows": 6, "frames": 6, "fps": 2, "loop": false, "loops": 1 },
-    "typing":    { "file": "sprite-atlas.png", "row": 2, "rows": 6, "frames": 6, "fps": 8 },
-    "alarmed":   { "file": "sprite-atlas.png", "row": 3, "rows": 6, "frames": 6, "fps": 8 },
-    "celebrate": { "file": "sprite-atlas.png", "row": 4, "rows": 6, "frames": 6, "fps": 8 },
-    "annoyed":   { "file": "sprite-atlas.png", "row": 5, "rows": 6, "frames": 6, "fps": 8 }
+    "sleeping":  [{ "file": "sprite-atlas.png", "row": 0, "rows": 6, "frames": 6, "fps": 3, "loop": true }],
+    "waking":    [{ "file": "sprite-atlas.png", "row": 1, "rows": 6, "frames": 6, "fps": 2, "loop": false, "loops": 1 }],
+    "typing":    [{ "file": "sprite-atlas.png", "row": 2, "rows": 6, "frames": 6, "fps": 8 }],
+    "alarmed":   [{ "file": "sprite-atlas.png", "row": 3, "rows": 6, "frames": 6, "fps": 8 }],
+    "celebrate": [{ "file": "sprite-atlas.png", "row": 4, "rows": 6, "frames": 6, "fps": 8 }],
+    "annoyed":   [{ "file": "sprite-atlas.png", "row": 5, "rows": 6, "frames": 6, "fps": 8 }]
   },
   "assets": {
     "dock-icon": { "file": "dock-icon.png" },
@@ -282,7 +314,10 @@ renderer/assets/orc/
 
 The `fps`/`loop`/`loops` values above are copied verbatim from today's
 hardcoded `ANIM_CONFIG` in `renderer/app.js` — this manifest is a lossless
-description of orc's current behavior, not a change to it.
+description of orc's current behavior, not a change to it. Every category
+here has exactly one variant, since that's all today's assets provide —
+[variant selection](#variant-selection) is a no-op until a pack actually
+supplies alternatives (see the split-files example below).
 
 ### `capybara` (partial pack — no `bg` override)
 
@@ -306,12 +341,12 @@ renderer/assets/capybara/
   "display_name": "Capybara",
   "version": "1.0.0",
   "categories": {
-    "sleeping":  { "file": "sprite-atlas.png", "row": 0, "rows": 6, "frames": 6, "fps": 3, "loop": true },
-    "waking":    { "file": "sprite-atlas.png", "row": 1, "rows": 6, "frames": 6, "fps": 2, "loop": false, "loops": 1 },
-    "typing":    { "file": "sprite-atlas.png", "row": 2, "rows": 6, "frames": 6, "fps": 8 },
-    "alarmed":   { "file": "sprite-atlas.png", "row": 3, "rows": 6, "frames": 6, "fps": 8 },
-    "celebrate": { "file": "sprite-atlas.png", "row": 4, "rows": 6, "frames": 6, "fps": 8 },
-    "annoyed":   { "file": "sprite-atlas.png", "row": 5, "rows": 6, "frames": 6, "fps": 8 }
+    "sleeping":  [{ "file": "sprite-atlas.png", "row": 0, "rows": 6, "frames": 6, "fps": 3, "loop": true }],
+    "waking":    [{ "file": "sprite-atlas.png", "row": 1, "rows": 6, "frames": 6, "fps": 2, "loop": false, "loops": 1 }],
+    "typing":    [{ "file": "sprite-atlas.png", "row": 2, "rows": 6, "frames": 6, "fps": 8 }],
+    "alarmed":   [{ "file": "sprite-atlas.png", "row": 3, "rows": 6, "frames": 6, "fps": 8 }],
+    "celebrate": [{ "file": "sprite-atlas.png", "row": 4, "rows": 6, "frames": 6, "fps": 8 }],
+    "annoyed":   [{ "file": "sprite-atlas.png", "row": 5, "rows": 6, "frames": 6, "fps": 8 }]
   },
   "assets": {
     "dock-icon": { "file": "dock-icon.png" },
@@ -345,12 +380,12 @@ renderer/assets/hello-kitty/
   "display_name": "Hello Kitty",
   "version": "1.0.0",
   "categories": {
-    "sleeping":  { "file": "sprite-atlas.png", "row": 0, "rows": 6, "frames": 6, "fps": 3, "loop": true },
-    "waking":    { "file": "sprite-atlas.png", "row": 1, "rows": 6, "frames": 6, "fps": 2, "loop": false, "loops": 1 },
-    "typing":    { "file": "sprite-atlas.png", "row": 2, "rows": 6, "frames": 6, "fps": 8 },
-    "alarmed":   { "file": "sprite-atlas.png", "row": 3, "rows": 6, "frames": 6, "fps": 8 },
-    "celebrate": { "file": "sprite-atlas.png", "row": 4, "rows": 6, "frames": 6, "fps": 8 },
-    "annoyed":   { "file": "sprite-atlas.png", "row": 5, "rows": 6, "frames": 6, "fps": 8 }
+    "sleeping":  [{ "file": "sprite-atlas.png", "row": 0, "rows": 6, "frames": 6, "fps": 3, "loop": true }],
+    "waking":    [{ "file": "sprite-atlas.png", "row": 1, "rows": 6, "frames": 6, "fps": 2, "loop": false, "loops": 1 }],
+    "typing":    [{ "file": "sprite-atlas.png", "row": 2, "rows": 6, "frames": 6, "fps": 8 }],
+    "alarmed":   [{ "file": "sprite-atlas.png", "row": 3, "rows": 6, "frames": 6, "fps": 8 }],
+    "celebrate": [{ "file": "sprite-atlas.png", "row": 4, "rows": 6, "frames": 6, "fps": 8 }],
+    "annoyed":   [{ "file": "sprite-atlas.png", "row": 5, "rows": 6, "frames": 6, "fps": 8 }]
   },
   "assets": {
     "dock-icon": { "file": "dock-icon.png" },
@@ -359,10 +394,12 @@ renderer/assets/hello-kitty/
 }
 ```
 
-### A hypothetical one-file-per-category pack
+### A hypothetical multi-variant, split-files pack
 
-To illustrate the other authoring style permitted by the same schema — no
-shared atlas, `row`/`rows` omitted entirely:
+To illustrate the two remaining degrees of freedom the schema allows —
+no shared atlas (`row`/`rows` omitted entirely) and more than one variant
+per category — none of today's bundled characters exercise either, so
+this one is illustrative rather than drawn from a real asset:
 
 ```json
 {
@@ -371,8 +408,13 @@ shared atlas, `row`/`rows` omitted entirely:
   "display_name": "Example (split files)",
   "version": "1.0.0",
   "categories": {
-    "sleeping": { "file": "sleeping.png", "frames": 4, "fps": 2, "loop": true },
-    "typing":   { "file": "typing.png",   "frames": 8, "fps": 10 }
+    "sleeping": [
+      { "file": "sleeping.png", "frames": 4, "fps": 2, "loop": true }
+    ],
+    "typing": [
+      { "file": "typing-focused.png", "frames": 8, "fps": 10, "label": "focused" },
+      { "file": "typing-frantic.png", "frames": 8, "fps": 14, "label": "frantic" }
+    ]
   },
   "assets": {
     "borders": { "file": "frame.png" }
@@ -380,9 +422,14 @@ shared atlas, `row`/`rows` omitted entirely:
 }
 ```
 
-Here `sleeping.png` and `typing.png` are each a single-row strip; `row` and
-`rows` default to `0` and `1`, which is exactly what a single-row file
-needs.
+`sleeping.png`, `typing-focused.png`, and `typing-frantic.png` are each a
+single-row strip; `row` and `rows` default to `0` and `1`, which is exactly
+what a single-row file needs. `typing` has two variants: per [Variant
+selection](#variant-selection), the first time a session starts typing the
+player picks one of the two at random; if the character goes back to
+`typing` again later without an intervening restart, it MUST pick the
+other one (there are only two candidates, and the last-played one is
+excluded).
 
 ## Implementation Notes
 
@@ -391,11 +438,12 @@ for adopting this spec, not the schema itself:
 
 - **Renderer texture loading changes.** `renderer/app.js` currently loads
   exactly one texture (`peon-asset://sprite-atlas.png`). Because categories
-  can now point at different files, the renderer needs to load and cache
-  textures keyed by filename (at most 6 distinct files in v1.0 — one per
-  category, no variants yet) and swap `material.map` on animation switch,
-  recomputing UVs from that file's own `frames`/`rows` rather than the
-  current global `ATLAS_COLS`/`ATLAS_ROWS` constants.
+  (and now variants within a category) can each point at a different file,
+  the renderer needs to load and cache textures keyed by filename — one
+  per distinct file a pack declares, not a fixed count — and swap
+  `material.map` on animation switch, recomputing UVs from that file's own
+  `frames`/`rows` rather than the current global
+  `ATLAS_COLS`/`ATLAS_ROWS` constants.
 - **Single source of truth for animation config.** `lib/anim-state.js`
   (currently dead code outside tests) becomes the actual shared module for
   UV math, replacing the duplicated inline `ANIM_CONFIG` in
@@ -409,6 +457,12 @@ for adopting this spec, not the schema itself:
   then bundled), but the filename→path map it consults comes from parsing
   the active pack's (and default pack's) `openpeon.json` instead of the
   `BUNDLED_CHARS` literal.
+- **Variant selection state.** The "last played" tracking [Player
+  Behavior](#player-behavior) requires is new: nothing today tracks
+  per-category history, since every category currently resolves to exactly
+  one animation. This is small (one map, category name → last-picked
+  index, held for the process lifetime) but it's a new piece of runtime
+  state, not just a manifest-parsing change.
 - **Migration.** A pre-CEAP custom character folder (`character.json`, no
   `openpeon.json`) has no manifest to resolve against — a straight file
   copy to `~/.openpeon/pets/` would leave it invisible under CEAP's
@@ -423,17 +477,11 @@ for adopting this spec, not the schema itself:
 Captured now as intent, not designed in detail — each of these needs its
 own follow-on brainstorm before implementation:
 
-1. **Multiple variants per category + no-repeat selection.** Change each
-   category from a single object to an array of the same shape, and port
-   CESP's exact selection algorithm: candidates = all variants if only one
-   exists, else all variants except the last-played one; pick randomly;
-   remember the pick per category. Gives authors sound-pack-style variety
-   without over-scoping v1.0.
-2. **`bundled_sound_pack` field.** An optional manifest field naming a CESP
+1. **`bundled_sound_pack` field.** An optional manifest field naming a CESP
    pack (by its existing registry `name`) that pairs with this character by
    default, so an install flow can offer "install the matching sounds too."
    Manifest-only; requires no registry change.
-3. **Registry integration.** A shared OpenPeon registry listing sound packs,
+2. **Registry integration.** A shared OpenPeon registry listing sound packs,
    character (CEAP) packs, and CEAP+CESP bundles together, with pets
    discoverable under a `pets/` path convention parallel to sound packs'
    `sounds/`. The current `PeonPing/registry` schema
