@@ -62,18 +62,25 @@ going forward:
 
 ## Event Categories
 
-A CEAP pack MAY provide any subset of the following fixed categories. Any
-category it omits falls back to the default (`orc`) pack — see
-[Fallback Behavior](#fallback-behavior).
+The six fixed categories split into two kinds:
 
-| Category | Meaning |
-|---|---|
-| `sleeping` | Idle state. Loops indefinitely while nothing is active. |
-| `waking` | Transition out of `sleeping` when a session starts. |
-| `typing` | A session is actively working. |
-| `alarmed` | A session needs input (permission request, context compaction). |
-| `celebrate` | A session finished its task. |
-| `annoyed` | A tool call failed. |
+- **Steady states** — `sleeping` and `typing`. Exactly one of these is
+  showing whenever no reaction is playing; the player rests in one or the
+  other for as long as a session stays idle or active. A pack that
+  declares `categories` at all MUST provide both.
+- **Reactions** — `waking`, `alarmed`, `celebrate`, `annoyed`. Transient:
+  each plays once (or `loops` times), then control returns to whichever
+  steady state applies. Each is optional; see [Fallback
+  Behavior](#fallback-behavior) for what happens when a pack omits one.
+
+| Category | Kind | Meaning |
+|---|---|---|
+| `sleeping` | Steady state, **required** | Idle state. Loops indefinitely while nothing is active. |
+| `typing` | Steady state, **required** | A session is actively working. Loops for as long as it stays active. |
+| `waking` | Reaction, optional | Transition out of `sleeping` when a session starts. |
+| `alarmed` | Reaction, optional | A session needs input (permission request, context compaction). |
+| `celebrate` | Reaction, optional | A session finished its task. |
+| `annoyed` | Reaction, optional | A tool call failed. |
 
 This set matches `EVENT_TO_ANIM` in `lib/session-tracker.js` exactly — see
 [Event Mapping](#event-mapping).
@@ -106,12 +113,14 @@ with no `categories` block at all.
 ### `categories`
 
 An object keyed by category name (see [Event Categories](#event-categories)
-— a validator MUST reject unknown keys). Each value is a **non-empty array**
-of one or more variants — the same shape as CESP's `sounds: [...]` array.
-Most categories will declare exactly one variant; an array with more than
-one lets a pack offer several takes on the same animation, selected at
-random with no-immediate-repeat (see [Player
-Behavior](#player-behavior)):
+— a validator MUST reject unknown keys). If `categories` is present, it
+MUST include both `sleeping` and `typing` — a validator MUST reject a
+`categories` block that omits either of the two steady states. Each value
+is a **non-empty array** of one or more variants — the same shape as
+CESP's `sounds: [...]` array. Most categories will declare exactly one
+variant; an array with more than one lets a pack offer several takes on
+the same animation, selected at random with no-immediate-repeat (see
+[Player Behavior](#player-behavior)):
 
 ```json
 "typing": [
@@ -183,8 +192,9 @@ A pack MAY declare only the asset keys it overrides.
 - **Bundled defaults:** `orc`, `capybara`, and `hello-kitty` ship inside the
   app package (under `renderer/assets/<name>/`), each with its own
   `openpeon.json`, replacing today's hardcoded `BUNDLED_CHARS` object.
-  `orc` remains the default pack referenced by
-  [Fallback Behavior](#fallback-behavior).
+  `orc` remains the default pack for [asset
+  fallback](#asset-fallback) — categories don't have a cross-pack default;
+  see [Category fallback](#category-fallback).
 - **Migration:** on first launch after this change, if `~/.openpeon/pets/`
   doesn't exist but the legacy `<userData>/characters/` directory (today's
   install location, documented in `CONTRIBUTING.md`) does, peon-pet copies
@@ -194,23 +204,62 @@ A pack MAY declare only the asset keys it overrides.
 
 ## Fallback Behavior
 
-A pack is not required to provide every category or asset. Resolution order
-for any given category or asset key, at load time:
+Categories and assets fall back differently. Assets fall back *to the
+default pack* — cosmetic chrome (borders, background) is fine to share.
+Categories never fall back to a substitute animation at all, from this
+pack or any other — a pack's visual identity should never be a patchwork
+of another character's animations, or of its own animations standing in
+for each other. See [Category fallback](#category-fallback) below for what
+a missing reaction category does instead.
+
+### Category fallback
+
+Both steady states (`sleeping`, `typing`) are required whenever `categories`
+is present, so there's never a missing-steady-state case to resolve. The
+four reaction categories (`waking`, `alarmed`, `celebrate`, `annoyed`) are
+each optional, and a missing one is **not** resolved by substituting any
+animation — from this pack or another:
+
+- A player MUST NOT play another pack's animation for a category the
+  active pack omits.
+- A player MUST NOT substitute a different animation from the *same* pack
+  either (in particular, `sleeping` is not a stand-in for a missing
+  `waking`, `alarmed`, `celebrate`, or `annoyed` — playing "asleep" to
+  represent "waking up," for instance, would show the opposite of what
+  happened).
+- Instead, when the active pack omits a reaction category, the
+  corresponding event simply has no visible effect: the player continues
+  showing whichever steady state already applies (`typing` if a session is
+  active, `sleeping` otherwise), exactly as if the event had fired with no
+  category mapped to it at all.
+
+For clarity: a pack that declares only `sleeping` and `typing` shows no
+special reaction to a task completing, a permission request, or a tool
+failure — the character just keeps typing (or returns to sleeping once the
+session goes idle).
+
+The entry used for a category that *is* present is the whole variant array
+— a category's variants are never merged with another category's. Which
+single variant plays on a given transition is a separate, later decision —
+see [Player Behavior](#player-behavior).
+
+### Asset fallback
+
+A pack is not required to provide every asset. Resolution order for any
+given asset key, at load time:
 
 1. The active pack's own manifest entry, if present.
 2. The default pack's (`orc`) manifest entry.
 
-For `categories`, the entry at each tier is the whole variant array — a
-pack that declares a category is never merged variant-by-variant with the
-default pack's variants for that same category. Which single variant plays
-on a given transition is a separate, later decision — see [Player
-Behavior](#player-behavior).
-
+Unlike categories, assets (`borders`, `bg`, `dock-icon`) are cosmetic chrome
+rather than the character's own identity, so borrowing the default pack's
+asset when a pack omits one is intentional — see the `capybara`/
+`hello-kitty` examples below, both of which omit `bg` and pick up `orc`'s.
 This replaces today's `charMap[filename] || BUNDLED_CHARS.orc[filename] ||
 filename` fallback chain in `main.js` — same shape, now driven by manifest
-data per category/asset instead of a hardcoded per-filename map. The default
-pack MUST provide every fixed category and every asset a player requires to
-render (in practice: all three).
+data per asset key instead of a hardcoded per-filename map. The default
+pack MUST provide every asset a player requires to render (in practice: all
+three).
 
 ## Animation Constraints
 
@@ -247,9 +296,12 @@ categories. peon-pet's mapping (`lib/session-tracker.js`):
   reaction finishes.
 - A player SHOULD return to `sleeping` after a period of inactivity
   (peon-pet: 30 seconds) with no active session.
-- A player MUST resolve fallback per-category and per-asset independently,
-  per [Fallback Behavior](#fallback-behavior) — a partial pack MUST NOT be
-  rejected outright.
+- A player MUST resolve asset fallback per-asset key independently, per
+  [Asset fallback](#asset-fallback) — a partial pack MUST NOT be rejected
+  outright.
+- A player MUST NOT play any substitute animation for a reaction category
+  the active pack omits — per [Category fallback](#category-fallback), the
+  event that would have triggered it simply has no visible effect.
 
 ### Variant selection
 
@@ -430,6 +482,12 @@ player picks one of the two at random; if the character goes back to
 `typing` again later without an intervening restart, it MUST pick the
 other one (there are only two candidates, and the last-played one is
 excluded).
+
+This pack also demonstrates the minimum valid `categories` block — just
+the two required steady states, no reactions at all. Per [Category
+fallback](#category-fallback), a session starting, a permission request, a
+task completing, or a tool failure all produce no special animation here;
+the character only ever shows `sleeping` or `typing`.
 
 ## Implementation Notes
 
