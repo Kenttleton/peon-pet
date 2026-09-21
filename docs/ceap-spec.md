@@ -154,8 +154,8 @@ Both authoring styles are supported by the same schema:
 
 ### `assets`
 
-An object keyed by a fixed set of non-animated asset roles — the same three
-non-atlas files a bundled character maps today:
+An object keyed by a fixed set of asset roles — the same three overlay
+files a bundled character maps today:
 
 ```json
 "assets": {
@@ -167,9 +167,33 @@ non-atlas files a bundled character maps today:
 
 | Key | Description |
 |---|---|
-| `dock-icon` | macOS dock icon while this character is active. |
-| `borders` | Decorative overlay drawn on top of the sprite. |
-| `bg` | Background texture drawn behind the sprite. |
+| `dock-icon` | macOS dock icon while this character is active. MUST be static — see below. |
+| `borders` | Decorative overlay drawn on top of the sprite. MAY be static or animated. |
+| `bg` | Background texture drawn behind the sprite. MAY be static or animated. |
+
+`borders` and `bg` MAY be **animated**: a continuous, ambient effect (a
+lightning crackle, a shimmering glow) that loops independently of the
+character's own state — it is not tied to `sleeping`/`typing`/any reaction,
+and does not participate in [variant selection](#variant-selection) (an
+animated asset is a single strip, not an array). An asset entry becomes
+animated by adding the same frame-timing fields a category variant uses:
+
+```json
+"borders": { "file": "borders-lightning.png", "frames": 8, "fps": 12, "loop": true }
+```
+
+| Field | Required | Default | Description |
+|---|---|---|---|
+| `file` | yes | — | Path to the image, relative to the pack directory. |
+| `frames` | no | `1` | Frame count. `1` (the default) means static — the fields below are meaningless and MUST be omitted when `frames` is absent or `1`. |
+| `fps` | required if `frames` > 1 | — | Playback speed, in frames per second. |
+| `row` / `rows` | no | `0` / `1` | Same meaning as a category variant's `row`/`rows`, for authors sharing an atlas between an animated asset and something else. |
+| `loop` | no | `true` | Animated assets default to looping, since there's no event to return from — this is ambient, not a reaction. |
+
+`dock-icon` MUST NOT declare `frames` > 1 — a validator MUST reject it. A
+macOS dock icon has no animation mechanism to drive; players render frame 0
+only, so allowing the field would silently mislead an author into thinking
+it will animate.
 
 A pack MAY declare only the asset keys it overrides.
 
@@ -302,6 +326,10 @@ categories. peon-pet's mapping (`lib/session-tracker.js`):
 - A player MUST NOT play any substitute animation for a reaction category
   the active pack omits — per [Category fallback](#category-fallback), the
   event that would have triggered it simply has no visible effect.
+- A player MUST advance an animated `borders`/`bg` asset on its own frame
+  timer, independent of the sprite's current category — an ambient effect
+  keeps playing through `sleeping`, `typing`, and every reaction without
+  regard to what the sprite is doing.
 
 ### Variant selection
 
@@ -489,6 +517,33 @@ fallback](#category-fallback), a session starting, a permission request, a
 task completing, or a tool failure all produce no special animation here;
 the character only ever shows `sleeping` or `typing`.
 
+### A hypothetical animated border
+
+To illustrate the ambient asset animation from the [`assets`](#assets)
+section — a lightning-crackle effect running continuously around the
+sprite, independent of whatever the character itself is doing:
+
+```json
+{
+  "ceap_version": "1.0",
+  "name": "orc",
+  "display_name": "Orc",
+  "version": "1.1.0",
+  "categories": { "...": "unchanged from the earlier orc example" },
+  "assets": {
+    "dock-icon": { "file": "dock-icon.png" },
+    "borders":   { "file": "borders-lightning.png", "frames": 8, "fps": 12, "loop": true },
+    "bg":        { "file": "bg.png" }
+  }
+}
+```
+
+`borders-lightning.png` is an 8-frame strip; the player loops it at 12fps
+forever, in parallel with the sprite's own `sleeping`/`typing`/reaction
+frame timer — the two are unrelated. Compare to `dock-icon`, which stays a
+plain `{ "file": "dock-icon.png" }` with no frame fields, since it's
+required to be static.
+
 ## Implementation Notes
 
 Flagged here for the reviewer's benefit — these affect effort estimation
@@ -529,17 +584,30 @@ for adopting this spec, not the schema itself:
   each copied legacy folder, applying the fixed 6×6 row layout
   `CONTRIBUTING.md` already documents for `character.json`-based
   submissions.
+- **Animated border/bg rendering.** `borderMesh`/`bgMesh` in
+  `renderer/app.js` are currently a single static texture each. An
+  animated asset needs its own frame timer and its own UV update on the
+  same mesh — the same `computeUVs`/texture-cache machinery the sprite
+  uses, just a second independent instance running on its own clock,
+  decoupled from `currentAnim`.
 
 ## Future Work
 
 Captured now as intent, not designed in detail — each of these needs its
 own follow-on brainstorm before implementation:
 
-1. **`bundled_sound_pack` field.** An optional manifest field naming a CESP
+1. **Event-linked border animation.** Let a border effect vary by category
+   — a red pulse during `alarmed`, a gold shimmer during `celebrate` —
+   instead of one continuous ambient effect. This needs its own resolution
+   design (a `border_categories` block mirroring `categories`? a per-category
+   `border` override?) and its own fallback semantics, and should get the
+   same scrutiny [Category fallback](#category-fallback) got rather than
+   reusing it by assumption.
+2. **`bundled_sound_pack` field.** An optional manifest field naming a CESP
    pack (by its existing registry `name`) that pairs with this character by
    default, so an install flow can offer "install the matching sounds too."
    Manifest-only; requires no registry change.
-2. **Registry integration.** A shared OpenPeon registry listing sound packs,
+3. **Registry integration.** A shared OpenPeon registry listing sound packs,
    character (CEAP) packs, and CEAP+CESP bundles together, with pets
    discoverable under a `pets/` path convention parallel to sound packs'
    `sounds/`. The current `PeonPing/registry` schema
