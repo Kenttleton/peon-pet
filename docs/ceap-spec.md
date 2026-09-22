@@ -66,8 +66,8 @@ The six fixed categories split into two kinds:
 
 - **Steady states** — `sleeping` and `typing`. Exactly one of these is
   showing whenever no reaction is playing; the player rests in one or the
-  other for as long as a session stays idle or active. A pack that
-  declares `categories` at all MUST provide both.
+  other for as long as a session stays idle or active. Every pack MUST
+  provide both.
 - **Reactions** — `waking`, `alarmed`, `celebrate`, `annoyed`. Transient:
   each plays once (or `loops` times), then control returns to whichever
   steady state applies. Each is optional; see [Fallback
@@ -99,9 +99,13 @@ directory.
 | `display_name` | string | Human-readable name, 1–128 characters. |
 | `version` | string | The pack's own semantic version (e.g. `"1.0.0"`), independent of `ceap_version`. |
 
-A manifest MUST declare at least one of `categories` or `assets` — a pack
-MAY consist entirely of asset overrides (e.g. a borders-only cosmetic pack)
-with no `categories` block at all.
+A manifest MUST declare `categories`. v1.0 packs are installed and
+selected wholesale, as a complete character — there's no player mechanism
+to apply one pack's `borders`/`bg`/`dock-icon` on top of a different
+pack's `categories`, so an asset-only pack would have nothing to attach
+its assets to. Composable, asset-only packs (e.g. a borders pack usable
+across characters) are deferred to a later CEAP version — see [Future
+Work](#future-work).
 
 ### Recommended Fields
 
@@ -113,9 +117,9 @@ with no `categories` block at all.
 ### `categories`
 
 An object keyed by category name (see [Event Categories](#event-categories)
-— a validator MUST reject unknown keys). If `categories` is present, it
-MUST include both `sleeping` and `typing` — a validator MUST reject a
-`categories` block that omits either of the two steady states. Each value
+— a validator MUST reject unknown keys). `categories` MUST include both
+`sleeping` and `typing` — a validator MUST reject a `categories` block
+that omits either of the two steady states. Each value
 is a **non-empty array** of one or more variants — the same shape as
 CESP's `sounds: [...]` array. Most categories will declare exactly one
 variant; an array with more than one lets a pack offer several takes on
@@ -251,8 +255,9 @@ a missing reaction category does instead.
 
 ### Category fallback
 
-Both steady states (`sleeping`, `typing`) are required whenever `categories`
-is present, so there's never a missing-steady-state case to resolve. The
+Both steady states (`sleeping`, `typing`) are always required — every
+pack declares `categories`, so there's never a missing-steady-state case
+to resolve. The
 four reaction categories (`waking`, `alarmed`, `celebrate`, `annoyed`) are
 each optional, and a missing one is **not** resolved by substituting any
 animation — from this pack or another:
@@ -614,13 +619,22 @@ for adopting this spec, not the schema itself:
 Captured now as intent, not designed in detail — each of these needs its
 own follow-on brainstorm before implementation:
 
-1. **Event-linked border animation.** Let a border effect vary by category
-   — a red pulse during `alarmed`, a gold shimmer during `celebrate` —
-   instead of one continuous ambient effect. This needs its own resolution
-   design (a `border_categories` block mirroring `categories`? a per-category
-   `border` override?) and its own fallback semantics, and should get the
-   same scrutiny [Category fallback](#category-fallback) got rather than
-   reusing it by assumption.
+1. **Event-linked border animation, and composable border packs.** Let a
+   border effect vary by category — a red pulse during `alarmed`, a gold
+   shimmer during `celebrate` — instead of one continuous ambient effect.
+   This needs its own resolution design (a `border_categories` block
+   mirroring `categories`? a per-category `border` override?) and its own
+   fallback semantics, and should get the same scrutiny [Category
+   fallback](#category-fallback) got rather than reusing it by assumption.
+   Making borders category-driven means rendering them on their own layer
+   that mirrors the sprite's, the way `bgMesh`/`borderMesh` don't today —
+   and once that overhaul exists, it's also the right time to let a
+   borders-only pack apply to a different pack's `categories` (asset-only
+   packs are disallowed in v1.0 — see [Required
+   Fields](#required-fields) — precisely because no such layering
+   mechanism exists yet). Registration/install flow would need to grow
+   alongside it to let a user pick a character pack and a border pack
+   independently, instead of today's one-pack-per-slot model.
 2. **`bundled_sound_pack` field.** An optional manifest field naming a CESP
    pack (by its existing registry `name`) that pairs with this character by
    default, so an install flow can offer "install the matching sounds too."
