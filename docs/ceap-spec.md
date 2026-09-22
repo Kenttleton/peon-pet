@@ -217,8 +217,12 @@ A pack MAY declare only the asset keys it overrides.
   app package (under `renderer/assets/<name>/`), each with its own
   `openpeon.json`, replacing today's hardcoded `BUNDLED_CHARS` object.
   `orc` remains the default pack for [asset
-  fallback](#asset-fallback) — categories don't have a cross-pack default;
-  see [Category fallback](#category-fallback).
+  fallback](#asset-fallback) — for `dock-icon` only; categories don't have
+  a cross-pack default at all, see [Category
+  fallback](#category-fallback). This is a v1.0-only choice: CESP's own
+  defaults are *not* bundled files but an install-time download (see
+  [Future Work](#future-work) for the planned convergence once CEAP packs
+  are registry-listed).
 - **Migration:** on first launch after this change, if `~/.openpeon/pets/`
   doesn't exist but the legacy `<userData>/characters/` directory (today's
   install location, documented in `CONTRIBUTING.md`) does, peon-pet copies
@@ -228,8 +232,17 @@ A pack MAY declare only the asset keys it overrides.
 
 ## Fallback Behavior
 
-Categories and assets fall back differently. Assets fall back *to the
-default pack* — cosmetic chrome (borders, background) is fine to share.
+Categories and assets fall back differently, and the three asset keys
+don't all fall back the same way either. `dock-icon` falls back *to the
+default pack* — the app always needs some icon to show in the dock, so a
+pack that omits one still gets orc's. `borders` and `bg` have **no
+fallback**: they're cosmetic chrome a pack may simply not use — not every
+sprite needs a background layer, and a pack's own border style shouldn't
+be replaced by another pack's (an orc medieval border standing in for a
+hello-kitty pack that has none would look wrong). A pack that omits
+`borders` or `bg` renders without that layer, full stop. See [Asset
+fallback](#asset-fallback) below for the resolution order per key.
+
 Categories never fall back to a substitute animation at all, from this
 pack or any other — a pack's visual identity should never be a patchwork
 of another character's animations, or of its own animations standing in
@@ -269,21 +282,24 @@ see [Player Behavior](#player-behavior).
 
 ### Asset fallback
 
-A pack is not required to provide every asset. Resolution order for any
-given asset key, at load time:
+A pack is not required to provide every asset, and resolution differs by
+key:
 
-1. The active pack's own manifest entry, if present.
-2. The default pack's (`orc`) manifest entry.
+- **`dock-icon`** — falls back to the default pack, at load time:
+  1. The active pack's own manifest entry, if present.
+  2. The default pack's (`orc`) manifest entry.
+- **`borders` / `bg`** — no fallback. If the active pack's manifest omits
+  the key, the player renders without that layer entirely; it never
+  substitutes the default pack's (or any other pack's) asset. See the
+  `capybara`/`hello-kitty` examples below, both of which omit `bg` and
+  render with no background layer at all.
 
-Unlike categories, assets (`borders`, `bg`, `dock-icon`) are cosmetic chrome
-rather than the character's own identity, so borrowing the default pack's
-asset when a pack omits one is intentional — see the `capybara`/
-`hello-kitty` examples below, both of which omit `bg` and pick up `orc`'s.
-This replaces today's `charMap[filename] || BUNDLED_CHARS.orc[filename] ||
-filename` fallback chain in `main.js` — same shape, now driven by manifest
-data per asset key instead of a hardcoded per-filename map. The default
-pack MUST provide every asset a player requires to render (in practice: all
-three).
+This narrows today's `charMap[filename] || BUNDLED_CHARS.orc[filename] ||
+filename` fallback chain in `main.js`, which applies that same fallback to
+every filename uniformly — CEAP keeps it for `dock-icon` only. The default
+pack MUST provide a `dock-icon`, since that's the one key every other pack
+can lean on; its own `borders`/`bg` are for its own rendering, not a
+fallback contract.
 
 ## Animation Constraints
 
@@ -322,7 +338,8 @@ categories. peon-pet's mapping (`lib/session-tracker.js`):
   (peon-pet: 30 seconds) with no active session.
 - A player MUST resolve asset fallback per-asset key independently, per
   [Asset fallback](#asset-fallback) — a partial pack MUST NOT be rejected
-  outright.
+  outright. For `borders`/`bg` this means rendering with no such layer at
+  all when the active pack omits it, not substituting another pack's.
 - A player MUST NOT play any substitute animation for a reaction category
   the active pack omits — per [Category fallback](#category-fallback), the
   event that would have triggered it simply has no visible effect.
@@ -399,12 +416,12 @@ here has exactly one variant, since that's all today's assets provide —
 [variant selection](#variant-selection) is a no-op until a pack actually
 supplies alternatives (see the split-files example below).
 
-### `capybara` (partial pack — no `bg` override)
+### `capybara` (partial pack — no `bg`)
 
 Source atlas: `capybara-sprite-atlas.png`, 2048×2048 — also a 6×6 grid.
-`BUNDLED_CHARS.capybara` has no `bg.png` entry today, so this manifest omits
-`bg` too — it falls back to `orc`'s background per
-[Fallback Behavior](#fallback-behavior).
+`BUNDLED_CHARS.capybara` has no `bg.png` entry today; under CEAP that
+means capybara simply renders with no background layer, per [Asset
+fallback](#asset-fallback) — not orc's `bg-pixel.png` standing in.
 
 ```
 renderer/assets/capybara/
@@ -443,7 +460,8 @@ create; a real submission would fill these in per
 ### `hello-kitty` (same shape as capybara)
 
 Source atlas: `hello-kitty-sprite-atlas.png`, 2048×2048 — same 6×6 grid,
-same partial-pack shape (no `bg` override):
+same partial-pack shape (no `bg`, so no background layer at all — not
+orc's):
 
 ```
 renderer/assets/hello-kitty/
@@ -679,6 +697,36 @@ own follow-on brainstorm before implementation:
    proposal against `PeonPing/registry` itself — but the path forward is
    concrete enough to scope: a schema change, a validation-workflow change,
    and a new quality-check script, not just "add a field."
+
+4. **Move bundled defaults to install-time download, mirroring CESP.**
+   Today's `BUNDLED_CHARS`, and this spec's replacement (`orc`/`capybara`/
+   `hello-kitty` shipped as files under `renderer/assets/<name>/`), ship
+   with the app binary. CESP does not do this for its own defaults: `peon-
+   ping`'s `install.sh` hardcodes `DEFAULT_PACKS="peon peasant sc_scv
+   sc_battlecruiser glados"` — five pack *names*, not files — and at
+   install time hands that list to `pack-download.sh`, which resolves each
+   name against `REGISTRY_URL` (`peonping.github.io/registry/index.json`),
+   falling back to a pinned `FALLBACK_REPO="PeonPing/og-packs"` at
+   `FALLBACK_REF="v1.1.0"` if the registry is unreachable, downloads each
+   pack's files individually, and caches them by sha256 checksum
+   (`is_cached_valid`/`store_checksum`) so re-installs and updates only
+   re-fetch what changed.
+
+   This can't happen before item 3 above lands — there is no registry
+   entry to resolve `orc`/`capybara`/`hello-kitty` against yet — but once
+   CEAP packs are listed (a `pets/` source_path per pack entry, per the
+   `registry-v2` sketch), peon-pet's own install/first-run path should
+   converge on the same shape: a `DEFAULT_PETS`-style hardcoded name list
+   in place of today's literal `renderer/assets/` bundling, a pet-specific
+   analog of `pack-download.sh` (or an extension of it) that resolves
+   names against the registry with a pinned fallback repo/ref for
+   offline/unreachable-registry installs, and the same per-file checksum
+   cache. `orc` likely stays special-cased as the one pet guaranteed
+   present with no download step, since it backs [asset
+   fallback](#asset-fallback) and the app needs *something* to render
+   before any network call succeeds — everything else (including
+   `capybara`/`hello-kitty`) would move to the download path CESP already
+   proves out.
 
 ## Out of Scope
 
