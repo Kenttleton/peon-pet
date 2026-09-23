@@ -1,0 +1,14 @@
+{
+  "ceap_version": "1.0",
+  "name": "test-atlas",
+  "display_name": "Test Atlas",
+  "version": "1.0.0",
+  "categories": {
+    "sleeping":  [{ "file": "sprite-atlas.png", "row": 0, "rows": 6, "frames": 6, "fps": 3, "loop": true }],
+    "waking":    [{ "file": "sprite-atlas.png", "row": 4, "rows": 6, "frames": 6, "fps": 2, "loop": false, "loops": 1 }],
+    "typing":    [{ "file": "sprite-atlas.png", "row": 3, "rows": 6, "frames": 6, "fps": 8 }],
+    "alarmed":   [{ "file": "sprite-atlas.png", "row": 2, "rows": 6, "frames": 6, "fps": 8 }],
+    "celebrate": [{ "file": "sprite-atlas.png", "row": 1, "rows": 6, "frames": 6, "fps": 8 }],
+    "annoyed":   [{ "file": "sprite-atlas.png", "row": 5, "rows": 6, "frames": 6, "fps": 8 }]
+  }
+}

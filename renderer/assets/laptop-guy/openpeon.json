@@ -1,0 +1,12 @@
+{
+  "ceap_version": "1.0",
+  "name": "laptop-guy",
+  "display_name": "Laptop Guy",
+  "version": "1.0.0",
+  "categories": {
+    "sleeping": [{ "file": "sprite-atlas.png", "row": 0, "rows": 4, "frames": 6, "fps": 3, "loop": true }],
+    "waking":   [{ "file": "sprite-atlas.png", "row": 1, "rows": 4, "frames": 6, "fps": 8, "loop": false, "loops": 1 }],
+    "typing":   [{ "file": "sprite-atlas.png", "row": 2, "rows": 4, "frames": 6, "fps": 8 }],
+    "alarmed":  [{ "file": "sprite-atlas.png", "row": 3, "rows": 4, "frames": 6, "fps": 8 }]
+  }
+}

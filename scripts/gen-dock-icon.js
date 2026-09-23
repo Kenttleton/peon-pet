@@ -9,8 +9,8 @@ const ATLAS_COLS = 6;
 const ATLAS_ROWS = 6;
 const OUT_SIZE = 256;
 
-const atlasPath = path.join(__dirname, '../renderer/assets/orc-sprite-atlas.png');
-const outPath = path.join(__dirname, '../renderer/assets/orc-dock-icon.png');
+const atlasPath = path.join(__dirname, '../renderer/assets/orc/sprite-atlas.png');
+const outPath = path.join(__dirname, '../renderer/assets/orc/dock-icon.png');
 
 (async () => {
   const img = await loadImage(atlasPath);

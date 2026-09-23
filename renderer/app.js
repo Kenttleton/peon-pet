@@ -1,62 +1,43 @@
+
 import * as THREE from '../node_modules/three/build/three.module.js';
 
-// --- Config ---
-const ATLAS_COLS = 6;
-const ATLAS_ROWS = 6;
-
-const ANIM_CONFIG = {
-  sleeping:  { row: 0, frames: 6, fps: 3,  loop: true  },
-  waking:    { row: 1, frames: 6, fps: 2,  loop: false, loops: 1 },
-  typing:    { row: 2, frames: 6, fps: 8,  loop: false },
-  alarmed:   { row: 3, frames: 6, fps: 8,  loop: false },
-  celebrate: { row: 4, frames: 6, fps: 8,  loop: false },
-  annoyed:   { row: 5, frames: 6, fps: 8,  loop: false },
-};
-
-// --- Scene setup ---
+// --- Renderer / scene (created eagerly; sized once config arrives) ---
 const canvas = document.getElementById('c');
 const renderer = new THREE.WebGLRenderer({
   canvas,
   alpha: true,
   antialias: false,
 });
-renderer.setSize(200, 200);
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setClearColor(0x000000, 0);
 
 const scene = new THREE.Scene();
-
 const camera = new THREE.OrthographicCamera(-100, 100, 100, -100, 0.1, 10);
 camera.position.z = 1;
 
-// --- Background ---
-const bgTex = new THREE.TextureLoader().load('peon-asset://bg.png');
-const bgMesh = new THREE.Mesh(
-  new THREE.PlaneGeometry(180, 180),
-  new THREE.MeshBasicMaterial({ map: bgTex, color: 0x888888 })
-);
-bgMesh.position.z = -0.5;
-scene.add(bgMesh);
+// --- Texture cache, keyed by the resolved peon-asset:// URL main.js sent us ---
+const textureLoader = new THREE.TextureLoader();
+const textureCache = new Map();
 
-// --- Sprite mesh ---
-const loader = new THREE.TextureLoader();
-const atlas = loader.load('peon-asset://sprite-atlas.png', () => {
-  atlas.magFilter = THREE.NearestFilter;
-  atlas.minFilter = THREE.NearestFilter;
-  atlas.generateMipmaps = false;
-  atlas.needsUpdate = true;
-});
+function loadTexture(url) {
+  let tex = textureCache.get(url);
+  if (tex) return tex;
+  tex = textureLoader.load(url, () => {
+    tex.magFilter = THREE.NearestFilter;
+    tex.minFilter = THREE.NearestFilter;
+    tex.generateMipmaps = false;
+    tex.needsUpdate = true;
+  });
+  textureCache.set(url, tex);
+  return tex;
+}
 
-// Square sprite — fills most of the 200×200 window
-let geometry = new THREE.PlaneGeometry(180, 180);
-const material = new THREE.MeshBasicMaterial({
-  map: atlas,
-  transparent: true,
-  alphaTest: 0.01,
-});
-const sprite = new THREE.Mesh(geometry, material);
-scene.add(sprite);
-sprite.position.y = 0;
+// --- Sprite mesh (created once config arrives — filenames aren't known yet) ---
+let geometry = null;
+let material = null;
+let sprite = null;
+let bgMesh = null;
+let borderMesh = null;
 
 // --- Flash overlay ---
 async function loadShader(url) {
@@ -69,7 +50,7 @@ let flashIntensity = 0;
 const flashColor = new THREE.Color(1, 1, 0);
 let flashDecay = 2.0;
 
-async function setupFlash() {
+async function setupFlash(size) {
   const vert = await loadShader('./shaders/flash.vert');
   const frag = await loadShader('./shaders/flash.frag');
 
@@ -84,26 +65,19 @@ async function setupFlash() {
     depthTest: false,
   });
 
-  const flashGeo = new THREE.PlaneGeometry(200, 200);
+  const flashGeo = new THREE.PlaneGeometry(size, size);
   flashMesh = new THREE.Mesh(flashGeo, flashMat);
   flashMesh.position.z = 0.5;
   scene.add(flashMesh);
 }
 
-setupFlash();
-
-// --- Border overlay ---
-const borderTex = loader.load('peon-asset://borders.png', () => {
-  borderTex.magFilter = THREE.NearestFilter;
-  borderTex.minFilter = THREE.NearestFilter;
-  borderTex.needsUpdate = true;
-});
-const borderMesh = new THREE.Mesh(
-  new THREE.PlaneGeometry(200, 200),
-  new THREE.MeshBasicMaterial({ map: borderTex, transparent: true, depthTest: false })
-);
-borderMesh.position.z = 0.4;
-scene.add(borderMesh);
+function triggerFlash(r, g, b, intensity = 0.6, decay = 3.0) {
+  if (!flashMesh) return;
+  flashColor.setRGB(r, g, b);
+  flashMesh.material.uniforms.flashColor.value = flashColor;
+  flashIntensity = intensity;
+  flashDecay = decay;
+}
 
 // --- Session dots (glowing orbs) ---
 const MAX_DOTS = 10;
@@ -183,14 +157,6 @@ function updateDots(sessions) {
   }
 }
 
-function triggerFlash(r, g, b, intensity = 0.6, decay = 3.0) {
-  if (!flashMesh) return;
-  flashColor.setRGB(r, g, b);
-  flashMesh.material.uniforms.flashColor.value = flashColor;
-  flashIntensity = intensity;
-  flashDecay = decay;
-}
-
 // --- Particle burst ---
 const PARTICLE_COUNT = 30;
 const particlePositions = new Float32Array(PARTICLE_COUNT * 3);
@@ -256,10 +222,6 @@ function burstParticles() {
 let shakeIntensity = 0;
 const SHAKE_DECAY = 8.0;
 
-function triggerShake(intensity = 12) {
-  shakeIntensity = intensity;
-}
-
 // --- ANIM_FLASH map ---
 const ANIM_FLASH = {
   waking:    () => triggerFlash(0.4, 0.8, 1.0, 0.3, 2.0),
@@ -268,8 +230,13 @@ const ANIM_FLASH = {
   annoyed:   () => triggerFlash(0.8, 0.4, 0.0, 0.3, 2.0),
 };
 
-// --- Animation state machine ---
-let currentAnim = 'idle';
+// --- Animation state machine (config arrives over IPC — see initScene) ---
+// ANIM_CONFIG[category] is an array of variants (CEAP's variant-selection
+// unit), not a single config object — most categories today have exactly
+// one, but the schema always takes an array.
+let ANIM_CONFIG = {};
+let currentAnim = 'sleeping';
+let currentVariant = null;   // the specific variant picked for currentAnim
 let currentFrame = 0;
 let frameTimer = 0;
 let pendingIdle = false;
@@ -277,6 +244,22 @@ let remainingLoops = 0;  // extra replays for non-sleeping anims
 const REACTION_LOOPS = 3;  // play reaction animations 3x before sleeping
 let idleTimer = null;
 const IDLE_TIMEOUT_MS = 30000;
+let isSubAgent = false;
+let anySessionActive = false;
+
+// Per-category "last played variant" — process-lifetime only, per CEAP's
+// variant-selection algorithm (docs/ceap-spec.md#variant-selection).
+const lastPlayedIndex = {};
+
+function pickVariant(animName) {
+  const variants = ANIM_CONFIG[animName];
+  if (!variants || variants.length === 0) return null;
+  if (variants.length === 1) return { variant: variants[0], index: 0 };
+  const lastIndex = lastPlayedIndex[animName];
+  const candidates = variants.map((_, i) => i).filter((i) => i !== lastIndex);
+  const index = candidates[Math.floor(Math.random() * candidates.length)];
+  return { variant: variants[index], index };
+}
 
 function resetIdleTimer() {
   if (idleTimer) clearTimeout(idleTimer);
@@ -285,13 +268,15 @@ function resetIdleTimer() {
   }, IDLE_TIMEOUT_MS);
 }
 
-function setFrame(animName, frame) {
-  const { row } = ANIM_CONFIG[animName];
-  // UV coords: u left→right, v bottom=0/top=1 (Three.js convention)
-  const u0 = frame / ATLAS_COLS;
-  const u1 = (frame + 1) / ATLAS_COLS;
-  const v0 = (ATLAS_ROWS - 1 - row) / ATLAS_ROWS;  // bottom of this row
-  const v1 = (ATLAS_ROWS - row) / ATLAS_ROWS;       // top of this row
+function setFrame(frame) {
+  const cfg = currentVariant;
+  if (!cfg) return;
+  const tex = loadTexture(cfg.url);
+  if (material.map !== tex) {
+    material.map = tex;
+    material.needsUpdate = true;
+  }
+  const { u0, u1, v0, v1 } = window.peonBridge.computeUVs(cfg, frame);
   // PlaneGeometry vertex UV order: [0]=TL, [1]=TR, [2]=BL, [3]=BR
   const uv = geometry.attributes.uv;
   uv.setXY(0, u0, v1); // TL
@@ -302,14 +287,22 @@ function setFrame(animName, frame) {
 }
 
 function playAnim(animName) {
+  // A category the active pack doesn't declare (e.g. a missing reaction)
+  // has no entry in ANIM_CONFIG at all — pickVariant returns null, and the
+  // event that would have triggered this simply has no visible effect, per
+  // docs/ceap-spec.md#category-fallback. No substitute is ever played.
+  const picked = pickVariant(animName);
+  if (!picked) return;
+
   pendingIdle = false;
-  if (!ANIM_CONFIG[animName]) return;
   currentAnim = animName;
+  currentVariant = picked.variant;
+  lastPlayedIndex[animName] = picked.index;
   currentFrame = 0;
   frameTimer = 0;
-  const loops = ANIM_CONFIG[animName].loops ?? REACTION_LOOPS;
+  const loops = currentVariant.loops ?? REACTION_LOOPS;
   remainingLoops = (animName !== 'sleeping') ? loops - 1 : 0;
-  setFrame(animName, 0);
+  setFrame(0);
   if (ANIM_FLASH[animName]) {
     ANIM_FLASH[animName]();
   }
@@ -317,8 +310,6 @@ function playAnim(animName) {
     resetIdleTimer();
   }
 }
-
-playAnim('sleeping');
 
 // --- Tooltip ---
 const tooltip = document.getElementById('tooltip');
@@ -380,7 +371,7 @@ function handleMouseMove(e) {
     const status = s.hot ? '<span style="color:#44ff44">active</span>'
                          : s.warm ? '<span style="color:#1aaa1a">idle</span>'
                          : '<span style="color:#555">cold</span>';
-    const label = s.cwd ? s.cwd.split('/').filter(Boolean).pop() : ('\u2026' + s.id.slice(-8));
+    const label = s.cwd ? s.cwd.split('/').filter(Boolean).pop() : ('…' + s.id.slice(-8));
     html = `${label} &bull; ${status}`;
   } else {
     const active = currentSessions.filter(s => s.hot).length;
@@ -410,21 +401,19 @@ function handleMouseLeave() {
 canvas.addEventListener('mousemove', handleMouseMove);
 canvas.addEventListener('mouseleave', handleMouseLeave);
 
-// --- Sub-agent config ---
-let isSubAgent = false;
+// --- One-time scene init, driven by the resolved CEAP pack over IPC ---
+function initScene(config) {
+  isSubAgent = !!config.subAgent;
+  ANIM_CONFIG = config.animations || {};
+  const size = config.size;
 
-window.peonBridge.onConfig(({ size, subAgent }) => {
-  if (subAgent) isSubAgent = true;
-  // Resize HTML body to match window
   document.documentElement.style.width = `${size}px`;
   document.documentElement.style.height = `${size}px`;
   document.body.style.width = `${size}px`;
   document.body.style.height = `${size}px`;
 
-  // Resize renderer
   renderer.setSize(size, size);
 
-  // Update camera bounds
   const half = size / 2;
   camera.left = -half;
   camera.right = half;
@@ -432,34 +421,61 @@ window.peonBridge.onConfig(({ size, subAgent }) => {
   camera.bottom = -half;
   camera.updateProjectionMatrix();
 
-  // Resize meshes to fit smaller window
   const inner = size * 0.9;
-  bgMesh.geometry.dispose();
-  bgMesh.geometry = new THREE.PlaneGeometry(inner, inner);
-  geometry.dispose();
-  geometry = new THREE.PlaneGeometry(inner, inner);
-  sprite.geometry = geometry;
-  borderMesh.geometry.dispose();
-  borderMesh.geometry = new THREE.PlaneGeometry(size, size);
 
-  // Re-apply current frame UVs to the new geometry
-  setFrame(currentAnim, currentFrame);
-
-  // Remove dots from scene and release WebGL resources
-  for (const mesh of dotMeshes) {
-    scene.remove(mesh);
-    mesh.geometry.dispose();
-    mesh.material.dispose();
+  // No cross-pack fallback for bg/borders (docs/ceap-spec.md#asset-fallback):
+  // a pack that omits either gets no such layer, not orc's — so the mesh is
+  // only created when the resolved asset is actually present. No grey/white
+  // placeholder plane stands in for a missing one.
+  const bgAsset = config.assets?.bg;
+  if (bgAsset) {
+    bgMesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(inner, inner),
+      new THREE.MeshBasicMaterial({ map: loadTexture(bgAsset.url), transparent: true })
+    );
+    bgMesh.position.z = -0.5;
+    scene.add(bgMesh);
   }
 
-  // Disable tooltip
-  tooltip.style.display = 'none';
-  canvas.removeEventListener('mousemove', handleMouseMove);
-  canvas.removeEventListener('mouseleave', handleMouseLeave);
-});
+  geometry = new THREE.PlaneGeometry(inner, inner);
+  material = new THREE.MeshBasicMaterial({
+    map: null,
+    transparent: true,
+    alphaTest: 0.01,
+  });
+  sprite = new THREE.Mesh(geometry, material);
+  scene.add(sprite);
+
+  const borderAsset = config.assets?.borders;
+  if (borderAsset) {
+    borderMesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(size, size),
+      new THREE.MeshBasicMaterial({ map: loadTexture(borderAsset.url), transparent: true, depthTest: false })
+    );
+    borderMesh.position.z = 0.4;
+    scene.add(borderMesh);
+  }
+
+  setupFlash(size);
+
+  // Sub-agent windows: no dots, no tooltip
+  if (isSubAgent) {
+    for (const mesh of dotMeshes) {
+      scene.remove(mesh);
+      mesh.geometry.dispose();
+      mesh.material.dispose();
+    }
+    tooltip.style.display = 'none';
+    canvas.removeEventListener('mousemove', handleMouseMove);
+    canvas.removeEventListener('mouseleave', handleMouseLeave);
+  }
+
+  playAnim('sleeping');
+  requestAnimationFrame(animate);
+}
 
 // --- IPC events ---
-let anySessionActive = false;
+window.peonBridge.onConfig(initScene);
 
 window.peonBridge.onEvent(({ anim }) => {
   // Sub-agents only respond to the initial waking event
@@ -474,7 +490,7 @@ window.peonBridge.onSessionUpdate(({ sessions }) => {
   updateDots(sessions);
   const wasActive = anySessionActive;
   anySessionActive = sessions.some(s => s.hot);
-  // If a session just became hot and orc is sleeping, wake him to typing
+  // If a session just became hot and the character is sleeping, wake to typing
   if (anySessionActive && !wasActive && currentAnim === 'sleeping') {
     playAnim('typing');
   }
@@ -522,36 +538,38 @@ function animate(time) {
   }
 
   // Advance animation frame
-  const cfg = ANIM_CONFIG[currentAnim];
-  frameTimer += delta;
-  if (frameTimer >= 1 / cfg.fps) {
-    frameTimer = 0;
-    currentFrame++;
-    if (currentFrame >= cfg.frames) {
-      if (cfg.loop) {
-        currentFrame = 0;
-      } else {
-        if (remainingLoops > 0) {
-          remainingLoops--;
+  const cfg = currentVariant;
+  if (cfg) {
+    frameTimer += delta;
+    if (frameTimer >= 1 / cfg.fps) {
+      frameTimer = 0;
+      currentFrame++;
+      if (currentFrame >= cfg.frames) {
+        if (cfg.loop) {
           currentFrame = 0;
         } else {
-          currentFrame = cfg.frames - 1;
-          if (!pendingIdle) {
-            pendingIdle = true;
-            setTimeout(() => {
-              pendingIdle = false;
-              // Sub-agents always stay typing while alive
-              if (isSubAgent || anySessionActive) {
-                playAnim('typing');
-              } else {
-                playAnim('sleeping');
-              }
-            }, 300);
+          if (remainingLoops > 0) {
+            remainingLoops--;
+            currentFrame = 0;
+          } else {
+            currentFrame = cfg.frames - 1;
+            if (!pendingIdle) {
+              pendingIdle = true;
+              setTimeout(() => {
+                pendingIdle = false;
+                // Sub-agents always stay typing while alive
+                if (isSubAgent || anySessionActive) {
+                  playAnim('typing');
+                } else {
+                  playAnim('sleeping');
+                }
+              }, 300);
+            }
           }
         }
       }
+      setFrame(currentFrame);
     }
-    setFrame(currentAnim, currentFrame);
   }
 
   // Screen shake
@@ -566,4 +584,3 @@ function animate(time) {
 
   renderer.render(scene, camera);
 }
-requestAnimationFrame(animate);

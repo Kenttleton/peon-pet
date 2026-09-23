@@ -8,6 +8,9 @@ const {
   EVENT_TO_ANIM,
 } = require('./lib/session-tracker');
 const { JsonlWatcher } = require('./lib/jsonl-watcher');
+const os = require('os');
+const { loadManifestFromDir, resolvePack } = require('./lib/ceap-manifest');
+const { migrateLegacyCharacters } = require('./lib/ceap-migration');
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -32,25 +35,44 @@ const SUB_AGENT_BASE_Y_OFFSET = 170; // px from bottom of work area to main pet
 const SUB_AGENT_TTL_MS = 10 * 60 * 1000; // 10 min — destroy stale windows if SubagentStop never fired
 
 // --- Character system ---
-// Per-character asset maps: canonical name → bundled filename
-const BUNDLED_CHARS = {
-  orc: {
-    'sprite-atlas.png': 'orc-sprite-atlas.png',
-    'borders.png':      'orc-borders.png',
-    'bg.png':           'bg-pixel.png',
-    'dock-icon.png':    'orc-dock-icon.png',
-  },
-  capybara: {
-    'sprite-atlas.png': 'capybara-sprite-atlas.png',
-    'borders.png':      'capybara-borders.png',
-    'dock-icon.png':    'capybara-dock-icon.png',
-  },
-  'hello-kitty': {
-    'sprite-atlas.png': 'hello-kitty-sprite-atlas.png',
-    'borders.png':      'hello-kitty-borders.png',
-    'dock-icon.png':    'hello-kitty-dock-icon.png',
-  },
-};
+let resolvedPack = null; // { categories, assets } — set once in registerCharacterProtocol
+
+// Maps an opaque token -> absolute filesystem path, so the peon-asset://
+// protocol never has to parse a real path out of a URL. A `standard: true`
+// scheme's "host" goes through Chromium's domain/IPv4 host-parsing rules —
+// a bare digit-string host like "6" gets silently rewritten to "0.0.0.6"
+// (the IPv4 heuristic), and an absolute path like /Users/Name/... breaks
+// outright (slashes aren't legal in a host at all). Either way the
+// texture loader has no error callback, so failures are completely
+// silent. The token instead lives in the URL's *path*, under a fixed,
+// always-safe host — host-parsing quirks never apply to the path.
+const assetPathsByToken = new Map();
+let nextAssetToken = 0;
+
+function toAssetUrl(absPath) {
+  const token = String(nextAssetToken++);
+  assetPathsByToken.set(token, absPath);
+  return 'peon-asset://asset/' + token;
+}
+
+function toIpcVariant(variant) {
+  return { ...variant, url: toAssetUrl(variant.path) };
+}
+
+function toIpcAnimations(categories) {
+  const out = {};
+  for (const [name, variants] of Object.entries(categories)) {
+    out[name] = variants.map(toIpcVariant);
+  }
+  return out;
+}
+
+function toIpcAssets(assets) {
+  return {
+    borders: assets.borders ? toIpcVariant(assets.borders) : undefined,
+    bg: assets.bg ? toIpcVariant(assets.bg) : undefined,
+  };
+}
 
 function parseArgPath(flag) {
   const i = process.argv.indexOf(flag);
@@ -71,21 +93,49 @@ function registerCharacterProtocol() {
   const cfg = loadPetConfig();
   const char = argCharacter || cfg.character || 'orc';
   const assetsDir = path.join(__dirname, 'renderer', 'assets');
-  const customCharDir = path.join(app.getPath('userData'), 'characters', char);
-  const charMap = BUNDLED_CHARS[char] || {};
+  const defaultBundledDir = path.join(assetsDir, 'orc');
+  const bundledDir = path.join(assetsDir, char);
+  const petsDir = path.join(os.homedir(), '.openpeon', 'pets');
+  const customDir = path.join(petsDir, char);
 
-  protocol.handle('peon-asset', (request) => {
-    const filename = new URL(request.url).hostname;
-    // 1. User-installed character dir
-    if (fs.existsSync(path.join(customCharDir, filename))) {
-      return net.fetch('file://' + path.join(customCharDir, filename));
+  const defaultManifest = loadManifestFromDir(defaultBundledDir);
+
+  let activeManifest = null;
+  let activeDir = bundledDir;
+  try {
+    activeManifest = loadManifestFromDir(customDir);
+    if (activeManifest) activeDir = customDir;
+  } catch (err) {
+    console.warn(`[peon-pet] Ignoring invalid custom pack at ${customDir}: ${err.message}`);
+  }
+  if (!activeManifest) {
+    try {
+      activeManifest = loadManifestFromDir(bundledDir);
+      activeDir = bundledDir;
+    } catch (err) {
+      console.warn(`[peon-pet] Ignoring invalid bundled pack at ${bundledDir}: ${err.message}`);
     }
-    // 2. Bundled map: char-specific → orc fallback → filename as-is
-    const mapped = charMap[filename] || BUNDLED_CHARS.orc[filename] || filename;
-    return net.fetch('file://' + path.join(assetsDir, mapped));
+  }
+  if (!activeManifest) {
+    activeManifest = defaultManifest;
+    activeDir = defaultBundledDir;
+  }
+
+  resolvedPack = resolvePack(activeManifest, activeDir, defaultManifest, defaultBundledDir);
+
+  // Every token this protocol is ever asked for was minted by toAssetUrl()
+  // from a path inside resolvedPack, in this same process — the renderer
+  // never constructs one itself, so a miss here means a stale/foreign URL.
+  protocol.handle('peon-asset', (request) => {
+    const token = new URL(request.url).pathname.replace(/^\//, '');
+    const absPath = assetPathsByToken.get(token);
+    if (!absPath) {
+      return new Response('Not found', { status: 404 });
+    }
+    return net.fetch('file://' + absPath);
   });
 
-  return { char, assetsDir, customCharDir };
+  return { char, assetsDir, defaultBundledDir };
 }
 
 const tracker = createSessionTracker();
@@ -141,6 +191,7 @@ function createSubAgentWindow(sessionId) {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: false,
     },
   });
 
@@ -149,7 +200,12 @@ function createSubAgentWindow(sessionId) {
   subWin.loadFile('renderer/index.html');
 
   subWin.webContents.once('did-finish-load', () => {
-    subWin.webContents.send('peon-config', { size: 100, subAgent: true });
+    subWin.webContents.send('peon-config', {
+      size: 100,
+      subAgent: true,
+      animations: toIpcAnimations(resolvedPack.categories),
+      assets: toIpcAssets(resolvedPack.assets),
+    });
     subWin.webContents.send('peon-event', { anim: 'waking', event: 'SessionStart' });
     startMouseTrackingForWindow(subWin);
   });
@@ -413,6 +469,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: false,
     },
   });
 
@@ -421,14 +478,10 @@ function createWindow() {
   win.loadFile('renderer/index.html');
 
   if (process.platform === 'darwin') {
-    const cfg = loadPetConfig();
-    const char = argCharacter || cfg.character || 'orc';
-    const assetsDir = path.join(__dirname, 'renderer', 'assets');
-    const customIcon = path.join(app.getPath('userData'), 'characters', char, 'dock-icon.png');
-    const charMap = BUNDLED_CHARS[char] || {};
-    const iconFile = charMap['dock-icon.png'] || BUNDLED_CHARS.orc['dock-icon.png'];
-    const iconPath = fs.existsSync(customIcon) ? customIcon : path.join(assetsDir, iconFile);
-    app.dock.setIcon(iconPath);
+    const dockIconEntry = resolvedPack?.assets?.['dock-icon'];
+    if (dockIconEntry) {
+      app.dock.setIcon(dockIconEntry.path);
+    }
     app.dock.setMenu(buildDockMenu());
   }
 
@@ -449,6 +502,12 @@ function createWindow() {
 
   // Start polling once window is ready
   win.webContents.once('did-finish-load', () => {
+    win.webContents.send('peon-config', {
+      size: WIN_SIZE,
+      subAgent: false,
+      animations: toIpcAnimations(resolvedPack.categories),
+      assets: toIpcAssets(resolvedPack.assets),
+    });
     startPolling();
     startMouseTrackingForWindow(win);
 
@@ -476,6 +535,10 @@ if (!gotLock) {
   app.quit();
 } else {
   app.whenReady().then(() => {
+    const legacyCharactersDir = path.join(app.getPath('userData'), 'characters');
+    const petsDir = path.join(os.homedir(), '.openpeon', 'pets');
+    migrateLegacyCharacters(legacyCharactersDir, petsDir);
+
     registerCharacterProtocol();
     createWindow();
   });
