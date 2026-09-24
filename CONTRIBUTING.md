@@ -1,124 +1,95 @@
 # Contributing to peon-pet
 
-## Submitting a custom character
+This covers contributing to peon-pet's own code — the Electron app, the
+renderer/player, and the CEAP resolution pipeline. If you're looking to
+add or customize a *pet* (a CEAP pack), see [README.md](README.md#pets)
+instead — that doesn't touch this repo at all.
 
-Characters are sprite-based. Each character is a folder of PNG assets following the spec below. All submissions are manually reviewed and approved before merging.
+## Project structure
 
-### File structure
-
-```
-characters/
-  your-character-name/
-    character.json       ← required: metadata
-    sprite-atlas.png     ← required: animation frames
-    borders.png          ← optional: decorative frame overlay
-    bg.png               ← optional: background texture
-    dock-icon.png        ← optional: macOS dock icon
-```
-
----
-
-### `character.json`
-
-```json
-{
-  "name": "Display Name",
-  "slug": "your-character-name",
-  "author": "Your Name",
-  "website": "https://optional-link.com",
-  "version": "1.0.0",
-  "description": "Short description of the character."
-}
-```
-
----
-
-### `sprite-atlas.png` — the main requirement
-
-A single PNG sprite sheet with **6 columns × 6 rows** of animation frames.
-
-| Spec | Value |
+| Path | What it is |
 |---|---|
-| Format | PNG, RGBA (transparent background) |
-| Grid | 6 cols × 6 rows |
-| Frame size | 512 × 512 px (atlas = 3072 × 3072) |
-| Frame shape | Square — width must equal height |
-| Style | Pixel art or illustrated; must be clearly readable at 200×200 px display size |
+| `main.js` | Electron main process: window management, session tracking, CEAP pack resolution, the `peon-asset://` protocol handler, IPC. |
+| `preload.js` | Bridges `lib/anim-state.js` and a few IPC channels into the renderer via `contextBridge` (the renderer runs with `contextIsolation: true`, so it can't `require()` anything itself). |
+| `renderer/app.js` | The "player" — a Three.js scene that consumes the `peon-config`/`peon-event`/`session-update` IPC messages and draws the sprite, borders, background, session dots, and flash/particle effects. ES module, loaded by `renderer/index.html`. |
+| `lib/*.js` | Pure, testable CommonJS modules: `ceap-manifest.js` (schema validation + pack resolution), `ceap-migration.js` (legacy pack migration), `anim-state.js` (UV math), `session-tracker.js`, `jsonl-watcher.js`, `window-position.js`. No Electron APIs — these all run under plain Jest. |
+| `renderer/assets/<name>/` | Bundled CEAP packs (see `docs/ceap-spec.md`). This set is fixed; new pets go in `~/.openpeon/pets/`, not here. |
+| `tests/` | One `*.test.js` file per `lib/*.js` module, plus `assets.test.js` for the bundled packs. |
+| `docs/ceap-spec.md` | The CEAP pack format peon-pet reads. Read this before touching pack resolution, fallback behavior, or the manifest schema. |
 
-**Row layout (fixed — do not reorder):**
+## How the player works
 
-| Row | Animation | Notes |
-|---|---|---|
-| 0 | Sleeping | Loops. Character at rest — all 6 frames should form a seamless idle loop. |
-| 1 | Waking | Plays once. Transition from asleep to alert. |
-| 2 | Typing | Loops while a session is active. Character working at keyboard/desk. |
-| 3 | Alarmed | Plays 3× then returns. Reaction to permission requests / context limit. |
-| 4 | Celebrate | Plays 3× then returns. Reaction to task completion. |
-| 5 | Annoyed | Plays 3× then returns. Reaction to tool failures. |
+1. On launch, `main.js` resolves the active pet — `~/.openpeon/pets/<name>/`
+   if it exists and validates, else `renderer/assets/<name>/`, else an
+   error (see `registerPetProtocol` in `main.js`). `lib/ceap-manifest.js`'s
+   `resolvePack` does the actual merge: `dock-icon` falls back to the
+   default (`orc`) pack; categories, `borders`, and `bg` never do.
+2. Every resolved variant/asset gets an absolute filesystem path. `main.js`
+   mints an opaque token per path and serves it through the custom
+   `peon-asset://` protocol — deliberately *not* by encoding the real path
+   into the URL (see the comment above `registerPetProtocol`: a
+   `standard: true` scheme's host goes through Chromium's domain/IPv4
+   parsing rules, which silently mangles both real paths and bare numeric
+   tokens placed in the host position).
+3. `main.js` sends the resolved pack over the `peon-config` IPC channel.
+   `renderer/app.js`'s `initScene` builds the Three.js scene from it —
+   scene setup can't happen at module load, since the pack data isn't
+   known until this message arrives.
+4. Claude Code hook events flow through `lib/jsonl-watcher.js` →
+   `lib/session-tracker.js` → `main.js`'s `peon-event`/`session-update` IPC
+   → `renderer/app.js`'s `playAnim`, which does CEAP's variant-selection
+   (random, no-immediate-repeat) when a category has more than one
+   variant.
 
-**Guidelines:**
-- The character should be **seated at a desk or workstation** in typing/working frames. Standing-only characters will be rejected.
-- All 6 frames per row must be present and non-blank.
-- Sleeping row should loop smoothly (frame 6 → frame 1 should not jump).
-- Avoid copyrighted character likenesses without permission from the rights holder.
+## Development
 
----
-
-### `borders.png` (optional)
-
-A 200 × 200 px PNG overlay drawn on top of the sprite. Used for decorative frames, UI chrome, etc. Must have a transparent background — only the border elements should be opaque.
-
----
-
-### `bg.png` (optional)
-
-A 200 × 200 px PNG background texture drawn behind the sprite. Replaces the default stone-wall background.
-
----
-
-### `dock-icon.png` (optional)
-
-A 512 × 512 px PNG shown in the macOS dock when this character is active. Should be recognizable at small sizes (32–64 px). Defaults to the Peon-Ping logo if omitted.
-
----
-
-## How to submit
-
-1. Fork this repo
-2. Add your character folder under `characters/your-character-name/`
-3. Open a PR — include at least one screenshot or GIF of the character in action
-4. Wait for review — Gary manually approves all characters before merging
-
-PRs that don't meet the spec (wrong grid, non-square frames, missing rows, standing-only character, copyrighted likenesses) will be asked to revise before merging.
-
----
-
-## Installing a custom character locally
-
-To use a character locally before it's merged:
-
-1. Copy your character folder to:
-   ```
-   ~/Library/Application Support/Peon Pet/characters/your-character-name/
-   ```
-
-2. Create or edit `~/Library/Application Support/Peon Pet/peon-pet-config.json`:
-   ```json
-   { "character": "your-character-name" }
-   ```
-
-3. Restart peon-pet.
-
-To switch back to the default orc:
-```json
-{ "character": "orc" }
+```bash
+npm run dev    # starts with DevTools detached
+npm test       # runs the Jest suite
 ```
-Or just delete `peon-pet-config.json`.
 
-### Window Corner
+Simulate an event by writing to the peon-ping state file:
 
-Set the starting corner of the pet window in `peon-pet-config.json`:
-```json
-{ "corner": "bottom-right" }
+```bash
+python3 -c "
+import json, time, os, uuid
+f = os.path.expanduser('~/.claude/hooks/peon-ping/.state.json')
+try: state = json.load(open(f))
+except: state = {}
+state['last_active'] = {
+  'session_id': str(uuid.uuid4()),
+  'timestamp': time.time(),
+  'event': 'PermissionRequest'
+}
+json.dump(state, open(f, 'w'))
+"
 ```
-Values: `"bottom-left"` (default), `"bottom-right"`, `"top-left"`, `"top-right"`.
+
+Valid events: `SessionStart`, `SessionEnd`, `Stop`, `UserPromptSubmit`, `PermissionRequest`, `PostToolUseFailure`, `PreCompact`
+
+Switch pets while developing with `npm run dev -- --pet capybara` (see
+[README.md](README.md#pets) for the full list).
+
+## Conventions
+
+- `main.js`, `preload.js`, and everything in `lib/` are CommonJS
+  (`require`/`module.exports`), each starting with `'use strict'`.
+  `renderer/app.js` is an ES module (`import`/native browser APIs) — it
+  runs in the renderer, not Node, and has no access to `lib/` except what
+  `preload.js` explicitly bridges through `contextBridge`.
+- Every `lib/*.js` module is pure enough to unit-test without Electron —
+  keep new logic there rather than in `main.js` or `renderer/app.js` when
+  it doesn't need `main`'s Electron APIs or `app.js`'s Three.js scene.
+- One test file per module, named `tests/<module>.test.js`. Run `npm test`
+  before opening a PR — there's no CI configured yet, so this is the only
+  gate.
+- No bundler and no lint config — what you see in `node_modules`-free
+  source is what ships. Keep new dependencies to a minimum.
+
+## Submitting changes
+
+Open a PR against `main`. Describe what changed and why, and confirm
+`npm test` passes. For anything touching CEAP pack resolution or the
+manifest schema, check the change against `docs/ceap-spec.md` first — the
+spec is the source of truth; `main.js`/`lib/ceap-manifest.js` implement it,
+they don't define it.

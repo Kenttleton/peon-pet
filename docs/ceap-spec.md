@@ -54,9 +54,9 @@ going forward:
 
 | Term | Meaning |
 |---|---|
-| **Pet** | Product-level term for the on-screen Electron app/entity. The app is "Peon Pet." |
-| **Character** | A selectable identity for the pet (orc, capybara, hello-kitty, ...). Matches the existing `--character` flag, `char` variable, and `characters/` directory in `main.js`. In the OpenPeon umbrella sense, also the term for a CEAP+CESP bundle (see [Future Work](#future-work)). |
-| **CEAP pack** | The installable/distributable unit this spec defines: a directory with an `openpeon.json` manifest plus its animation and asset files. One character is backed by one CEAP pack. |
+| **Pet** | Product-level term for the on-screen Electron app/entity (the app is "Peon Pet") — and, since peon-pet packages animation only, the term for the selectable identity it shows (orc, capybara, hello-kitty, ...). Matches the `--pet` flag, `pet` variable/config field, and `~/.openpeon/pets/` directory in `main.js`. |
+| **Character** | Reserved as the umbrella term for a CEAP pack optionally paired with a CESP pack (see [Overview](#overview), [Future Work](#future-work)) — **not** what peon-pet's own selection mechanism uses, since peon-pet has no sound component to pair. |
+| **CEAP pack** | The installable/distributable unit this spec defines: a directory with an `openpeon.json` manifest plus its animation and asset files. One pet is backed by one CEAP pack. |
 | **Animation** | A named category of movement (`sleeping`, `typing`, ...) and the frame data behind it — the thing CEAP's `categories` field describes. |
 | **Sprite** | The pixel-art image asset format itself (a strip or atlas PNG). An implementation detail of how an animation's frames are stored on disk — not a pack-level noun. |
 
@@ -113,6 +113,32 @@ Work](#future-work).
 |---|---|---|
 | `author` | object | `{ name?: string, github?: string }`. |
 | `license` | string | SPDX identifier or free text. |
+
+### `render_density`
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `render_density` | number (positive, finite) | `1` | Divides every category variant's native pixel dimensions to get its on-screen size. |
+
+A category variant's on-screen size is `(atlas width ÷ `frames`, atlas
+height ÷ `rows`) ÷ render_density` — computed **per file**, not from one
+canonical category. This is deliberate: an artist can make e.g. `alarmed`'s
+art physically bigger than `sleeping`'s to make a reaction more dynamic,
+and different variants of the same category can differ too. A player MUST
+NOT enforce that a pack's variants share one native size — keeping that
+consistent (or not) across a pack's own categories/variants is the pack
+author's responsibility. There is no cross-pet consistency either: two
+different pets are not expected to render at the same size as each other.
+
+`render_density` is a pure multiplier on the *file's own* pixel dimensions
+— there is no separate width/height/shape field, and no square
+requirement. A non-square frame (e.g. a 512×256 atlas cell) simply renders
+as that rectangle; an artist wanting a circular or irregular silhouette
+achieves it with ordinary alpha transparency on a rectangular frame, the
+same way any other transparent region works. No fallback: this field is
+read from the active pack's own manifest only, defaulting to `1` (native
+pixels = on-screen pixels) when absent — see [Fallback
+Behavior](#fallback-behavior).
 
 ### `categories`
 
@@ -193,6 +219,26 @@ animated by adding the same frame-timing fields a category variant uses:
 | `fps` | required if `frames` > 1 | — | Playback speed, in frames per second. |
 | `row` / `rows` | no | `0` / `1` | Same meaning as a category variant's `row`/`rows`, for authors sharing an atlas between an animated asset and something else. |
 | `loop` | no | `true` | Animated assets default to looping, since there's no event to return from — this is ambient, not a reaction. |
+| `margin` | no, `borders` only | `0` | Fraction in `[0, 0.5)` of the frame reserved on each side for the border's own frame art. A validator MUST reject `margin` on any asset key other than `borders`. |
+
+`margin` exists because a `borders` asset overlaying the sprite is itself
+an enhancement, not something CEAP's bare minimum (`sleeping` + `typing`)
+assumes — see [Fallback Behavior](#fallback-behavior). A player that shows
+a border MUST NOT shrink the sprite/`bg` to make room for it; instead the
+on-screen *window* grows by `margin` on each side around the sprite's own
+declared size, and the border art (sized to the grown window) is expected
+to have a transparent center matching the sprite's footprint and opaque
+frame art only in the reserved margin. A pack with no `margin` (the
+default) that ships a border is declaring a full-bleed overlay the same
+size as the sprite itself, not a picture frame.
+
+Whether a border is shown at all — given the pack provides one — is a
+player policy CEAP does not mandate: a player MAY default to not
+rendering a `borders` asset even when the active pack has one, and offer
+the person running it a way to opt in. peon-pet's player defaults to no
+border, opt-in via `--border` or a `border` config field (see
+[README.md](../README.md#pets)) — the pack's `margin` is only consulted
+once a border is actually going to render.
 
 `dock-icon` MUST NOT declare `frames` > 1 — a validator MUST reject it. A
 macOS dock icon has no animation mechanism to drive; players render frame 0
@@ -229,7 +275,7 @@ A pack MAY declare only the asset keys it overrides.
   are registry-listed).
 - **Migration:** on first launch after this change, if `~/.openpeon/pets/`
   doesn't exist but the legacy `<userData>/characters/` directory (today's
-  install location, documented in `CONTRIBUTING.md`) does, peon-pet copies
+  install location) does, peon-pet copies
   existing custom character folders over once, synthesizing an
   `openpeon.json` for them from the legacy `character.json` format. No user
   action required; the legacy path is not written to going forward.
@@ -459,8 +505,8 @@ renderer/assets/capybara/
 
 Note `author`/`license` are omitted — this proposal makes no claim about
 authorship or license terms for a pre-existing bundled asset it didn't
-create; a real submission would fill these in per
-[CONTRIBUTING.md](../CONTRIBUTING.md).
+create; an author packaging their own pet would fill these in for real
+(see [README.md](../README.md#pets)).
 
 ### `hello-kitty` (same shape as capybara)
 
@@ -588,11 +634,20 @@ for adopting this spec, not the schema itself:
   `contextIsolation: true, nodeIntegration: false`, so it cannot `require()`
   a CommonJS module directly — sharing it means exposing it through
   `preload.js`'s `contextBridge`, the same mechanism already used for IPC.
-- **`main.js` protocol handler.** `registerCharacterProtocol` keeps its job
-  (resolve a requested filename to an absolute path, custom-pack dir first,
-  then bundled), but the filename→path map it consults comes from parsing
-  the active pack's (and default pack's) `openpeon.json` instead of the
-  `BUNDLED_CHARS` literal.
+- **`main.js` protocol handler.** `registerPetProtocol` resolves the active
+  pack (custom pack dir first, then bundled) via `resolvePack`, which
+  attaches an absolute filesystem `path` to every variant/asset entry
+  directly — there's no separate filename→path map, since CEAP filenames
+  aren't canonical across packs the way `BUNDLED_CHARS`'s were. The
+  `peon-asset://` scheme is registered `standard: true` (for
+  `corsEnabled` texture loading), which means its "host" goes through
+  Chromium's domain/IPv4 host-parsing rules — encoding a real path, or
+  even a bare digit string, into the host silently breaks (a numeric host
+  gets rewritten as an IPv4 address, e.g. `6` → `0.0.0.6`; a path breaks
+  outright since slashes aren't legal in a host). `main.js` instead mints
+  an opaque token per resolved path (`Map<token, absPath>`) and puts the
+  token in the URL's *path* (`peon-asset://asset/<token>`), where none of
+  that host-parsing applies.
 - **Variant selection state.** The "last played" tracking [Player
   Behavior](#player-behavior) requires is new: nothing today tracks
   per-category history, since every category currently resolves to exactly
@@ -605,8 +660,8 @@ for adopting this spec, not the schema itself:
   resolution rules, since CEAP has no filename-existence fallback the way
   today's code does. Migration needs to synthesize an `openpeon.json` for
   each copied legacy folder, applying the fixed 6×6 row layout
-  `CONTRIBUTING.md` already documents for `character.json`-based
-  submissions.
+  `lib/ceap-migration.js`'s `LEGACY_ROW_LAYOUT` already encodes for
+  `character.json`-based folders.
 - **Animated border/bg rendering.** `borderMesh`/`bgMesh` in
   `renderer/app.js` are currently a single static texture each. An
   animated asset needs its own frame timer and its own UV update on the

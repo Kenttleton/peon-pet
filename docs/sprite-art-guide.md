@@ -34,6 +34,9 @@ Generate each row separately, then composite into the atlas using Aseprite, Phot
 
 ## Swapping Art
 
-Replace `renderer/assets/peon-atlas.png` with real art.
-No code changes needed as long as dimensions match the spec above.
-If you change frame count for any row, update `ANIM_CONFIG` in `renderer/app.js`.
+Pets are CEAP packs under `renderer/assets/<name>/` (see
+[README.md](../README.md#pets) and
+[docs/ceap-spec.md](ceap-spec.md)). Replace a pack's `sprite-atlas.png`
+with real art — no code changes needed as long as dimensions match the
+spec above. If you change frame count for any row, update the `frames`
+value for that category in the pack's `openpeon.json`.

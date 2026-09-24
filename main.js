@@ -11,6 +11,7 @@ const { JsonlWatcher } = require('./lib/jsonl-watcher');
 const os = require('os');
 const { loadManifestFromDir, resolvePack } = require('./lib/ceap-manifest');
 const { migrateLegacyCharacters } = require('./lib/ceap-migration');
+const { computeWindowSize } = require('./lib/pet-size');
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -36,6 +37,8 @@ const SUB_AGENT_TTL_MS = 10 * 60 * 1000; // 10 min — destroy stale windows if 
 
 // --- Pet system ---
 let resolvedPack = null; // { categories, assets } — set once in registerPetProtocol
+let scale = 1; // resolved once in app.whenReady, before any window is created
+let borderEnabled = false; // resolved once in app.whenReady
 
 // Maps an opaque token -> absolute filesystem path, so the peon-asset://
 // protocol never has to parse a real path out of a URL. A `standard: true`
@@ -47,11 +50,18 @@ let resolvedPack = null; // { categories, assets } — set once in registerPetPr
 // silent. The token instead lives in the URL's *path*, under a fixed,
 // always-safe host — host-parsing quirks never apply to the path.
 const assetPathsByToken = new Map();
+const assetTokensByPath = new Map(); // absPath -> token, so multiple categories
+// sharing one atlas file (the common case) resolve to the same URL and the
+// renderer's texture cache dedupes them into a single load.
 let nextAssetToken = 0;
 
 function toAssetUrl(absPath) {
-  const token = String(nextAssetToken++);
-  assetPathsByToken.set(token, absPath);
+  let token = assetTokensByPath.get(absPath);
+  if (token === undefined) {
+    token = String(nextAssetToken++);
+    assetTokensByPath.set(absPath, token);
+    assetPathsByToken.set(token, absPath);
+  }
   return 'peon-asset://asset/' + token;
 }
 
@@ -67,9 +77,14 @@ function toIpcAnimations(categories) {
   return out;
 }
 
-function toIpcAssets(assets) {
+// Borders are an enhancement a pack may or may not include, and the player
+// defaults to full-bleed (no border, no frame margin) even when the active
+// pack has one — the user opts in via --border or the "border" config
+// field. Bare minimum is sleeping+typing; everything else (borders, bg,
+// reaction categories) only shows up when actually enabled.
+function toIpcAssets(assets, isBorderEnabled) {
   return {
-    borders: assets.borders ? toIpcVariant(assets.borders) : undefined,
+    borders: (isBorderEnabled && assets.borders) ? toIpcVariant(assets.borders) : undefined,
     bg: assets.bg ? toIpcVariant(assets.bg) : undefined,
   };
 }
@@ -80,6 +95,46 @@ function parseArgPath(flag) {
 }
 
 const argPet = parseArgPath('--pet');
+
+// Resolves the user's size preference: --scale (one-shot override) then the
+// "scale" config field (persistent default), then 1. Returns null on an
+// invalid value — the caller treats that as a hard error, same as an
+// unresolvable --pet, rather than silently falling back to 1.
+function resolveScale(cfg) {
+  const raw = parseArgPath('--scale') ?? (cfg.scale !== undefined ? String(cfg.scale) : null);
+  if (raw === null) return 1;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    console.error(`[peon-pet] Invalid --scale/config "scale" value ${JSON.stringify(raw)} — must be a positive number.`);
+    return null;
+  }
+  return value;
+}
+
+// --border is a one-shot override to force borders on for this run; the
+// "border" config field is the persistent default. There's no --no-border
+// — off is already the default, so overriding "on" back to "off" for one
+// run just means not passing --border and leaving the config alone.
+function resolveBorderEnabled(cfg) {
+  if (process.argv.includes('--border')) return true;
+  return typeof cfg.border === 'boolean' ? cfg.border : false;
+}
+
+// A border's frame margin only matters while borders are actually enabled
+// (user opt-in) and the active pack actually has one — otherwise 0, so the
+// window never grows to make room for a frame nothing will draw.
+function activeBorderMargin() {
+  return (borderEnabled && resolvedPack.assets.borders?.margin) || 0;
+}
+
+function windowSizeForVariant(variant, isSubAgentWindow) {
+  const { width, height } = computeWindowSize(variant, {
+    margin: activeBorderMargin(),
+    scale,
+    subAgent: isSubAgentWindow,
+  });
+  return { width: Math.round(width), height: Math.round(height) };
+}
 
 function loadPetConfig() {
   try {
@@ -172,14 +227,18 @@ async function readRemoteState(baseUrl) {
   }
 }
 
+// Sub-agent windows can each be a different size (their pet resizes per
+// active category same as the main window, just at half scale), so they're
+// stacked by summing actual current heights rather than a fixed per-slot
+// spacing — this keeps them touching with no gap or overlap regardless.
 function repositionSubAgentWindows() {
   const { height } = screen.getPrimaryDisplay().workAreaSize;
-  let i = 0;
+  let stackY = height - SUB_AGENT_BASE_Y_OFFSET;
   for (const [, subWin] of subAgentWindows) {
     if (!subWin.isDestroyed()) {
-      const mainY = height - SUB_AGENT_BASE_Y_OFFSET;
-      subWin.setPosition(20, mainY - (i + 1) * 100);
-      i++;
+      const [, winH] = subWin.getSize();
+      stackY -= winH;
+      subWin.setPosition(20, stackY);
     }
   }
 }
@@ -188,14 +247,14 @@ function createSubAgentWindow(sessionId) {
   if (subAgentWindows.size >= MAX_SUB_AGENT_WINDOWS) return;
   if (subAgentWindows.has(sessionId)) return;
 
-  const { height } = screen.getPrimaryDisplay().workAreaSize;
-  const idx = subAgentWindows.size;
+  const sleepingVariant = resolvedPack.categories.sleeping[0];
+  const { width: subW, height: subH } = windowSizeForVariant(sleepingVariant, true);
 
   const subWin = new BrowserWindow({
-    width: 100,
-    height: 100,
+    width: subW,
+    height: subH,
     x: 20,
-    y: (height - SUB_AGENT_BASE_Y_OFFSET) - (idx + 1) * 100,
+    y: 0, // provisional — repositionSubAgentWindows() below fixes this immediately
     transparent: true,
     frame: false,
     alwaysOnTop: true,
@@ -217,10 +276,10 @@ function createSubAgentWindow(sessionId) {
 
   subWin.webContents.once('did-finish-load', () => {
     subWin.webContents.send('peon-config', {
-      size: 100,
       subAgent: true,
+      scale,
       animations: toIpcAnimations(resolvedPack.categories),
-      assets: toIpcAssets(resolvedPack.assets),
+      assets: toIpcAssets(resolvedPack.assets, borderEnabled),
     });
     subWin.webContents.send('peon-event', { anim: 'waking', event: 'SessionStart' });
     startMouseTrackingForWindow(subWin);
@@ -237,6 +296,7 @@ function createSubAgentWindow(sessionId) {
 
   subAgentWindows.set(sessionId, subWin);
   subAgentCreatedAt.set(sessionId, Date.now());
+  repositionSubAgentWindows();
 }
 
 function destroySubAgentWindow(sessionId) {
@@ -462,16 +522,18 @@ function buildDockMenu() {
   ]);
 }
 
-const { WIN_SIZE, WIN_MARGIN, cornerPosition } = require('./lib/window-position');
+const { WIN_MARGIN, cornerPosition } = require('./lib/window-position');
 
 function createWindow() {
-  const { width, height } = screen.getPrimaryDisplay().workAreaSize;
+  const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;
   const cfg = loadPetConfig();
-  const { x, y } = cornerPosition(cfg.corner, width, height);
+  const sleepingVariant = resolvedPack.categories.sleeping[0];
+  const { width: petW, height: petH } = windowSizeForVariant(sleepingVariant, false);
+  const { x, y } = cornerPosition(cfg.corner, screenW, screenH, petW, petH);
 
   win = new BrowserWindow({
-    width: WIN_SIZE,
-    height: WIN_SIZE,
+    width: petW,
+    height: petH,
     x,
     y,
     transparent: true,
@@ -519,10 +581,10 @@ function createWindow() {
   // Start polling once window is ready
   win.webContents.once('did-finish-load', () => {
     win.webContents.send('peon-config', {
-      size: WIN_SIZE,
       subAgent: false,
+      scale,
       animations: toIpcAnimations(resolvedPack.categories),
-      assets: toIpcAssets(resolvedPack.assets),
+      assets: toIpcAssets(resolvedPack.assets, borderEnabled),
     });
     startPolling();
     startMouseTrackingForWindow(win);
@@ -546,6 +608,26 @@ function createWindow() {
 
 app.setName('Peon Pet');
 
+// Renderer-requested resize: only the main process can resize a real OS
+// window, but variant selection (which picks the size) happens in the
+// renderer, so it reports the final size (already scaled/margined/halved
+// for a sub-agent, per lib/pet-size.js) here on every category transition.
+ipcMain.on('resize-pet', (event, { width, height }) => {
+  const w = Math.max(1, Math.round(width));
+  const h = Math.max(1, Math.round(height));
+  const senderWin = BrowserWindow.fromWebContents(event.sender);
+  if (!senderWin || senderWin.isDestroyed()) return;
+  senderWin.setSize(w, h);
+  if (senderWin === win) {
+    const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;
+    const cfg = loadPetConfig();
+    const { x, y } = cornerPosition(cfg.corner, screenW, screenH, w, h);
+    senderWin.setPosition(x, y);
+  } else {
+    repositionSubAgentWindows();
+  }
+});
+
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
@@ -554,6 +636,14 @@ if (!gotLock) {
     const legacyCharactersDir = path.join(app.getPath('userData'), 'characters');
     const petsDir = path.join(os.homedir(), '.openpeon', 'pets');
     migrateLegacyCharacters(legacyCharactersDir, petsDir);
+
+    const cfg = loadPetConfig();
+    scale = resolveScale(cfg);
+    if (scale === null) {
+      app.exit(1);
+      return;
+    }
+    borderEnabled = resolveBorderEnabled(cfg);
 
     if (!registerPetProtocol()) {
       app.exit(1);

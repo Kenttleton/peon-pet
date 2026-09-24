@@ -4,6 +4,7 @@
   "display_name": "Orc",
   "version": "1.0.0",
   "license": "CC-BY-NC-4.0",
+  "render_density": 3.4,
   "categories": {
     "sleeping":  [{ "file": "sprite-atlas.png", "row": 0, "rows": 6, "frames": 6, "fps": 3, "loop": true }],
     "waking":    [{ "file": "sprite-atlas.png", "row": 1, "rows": 6, "frames": 6, "fps": 2, "loop": false, "loops": 1 }],
@@ -14,6 +15,6 @@
   },
   "assets": {
     "dock-icon": { "file": "dock-icon.png" },
-    "borders":   { "file": "borders.png" }
+    "borders":   { "file": "borders.png", "margin": 0.1 }
   }
 }

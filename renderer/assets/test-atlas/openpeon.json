@@ -3,6 +3,7 @@
   "name": "test-atlas",
   "display_name": "Test Atlas",
   "version": "1.0.0",
+  "render_density": 0.3,
   "categories": {
     "sleeping":  [{ "file": "sprite-atlas.png", "row": 0, "rows": 6, "frames": 6, "fps": 3, "loop": true }],
     "waking":    [{ "file": "sprite-atlas.png", "row": 4, "rows": 6, "frames": 6, "fps": 2, "loop": false, "loops": 1 }],

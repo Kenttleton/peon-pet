@@ -3,6 +3,7 @@
   "name": "orc-tavern",
   "display_name": "Orc (Tavern)",
   "version": "1.0.0",
+  "render_density": 0.7,
   "categories": {
     "sleeping":  [{ "file": "sprite-atlas.png", "row": 0, "rows": 6, "frames": 10, "fps": 3, "loop": true }],
     "waking":    [{ "file": "sprite-atlas.png", "row": 4, "rows": 6, "frames": 10, "fps": 8, "loop": false, "loops": 1 }],
@@ -13,7 +14,7 @@
   },
   "assets": {
     "dock-icon": { "file": "dock-icon.png" },
-    "borders":   { "file": "borders.png" },
+    "borders":   { "file": "borders.png", "margin": 0.1 },
     "bg":        { "file": "bg.png" }
   }
 }

@@ -6,7 +6,7 @@
         content="default-src 'self' peon-asset:; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self' peon-asset:;">
   <style>
     * { margin: 0; padding: 0; }
-    html, body { width: 200px; height: 200px; overflow: hidden; background: transparent; }
+    html, body { width: 100vw; height: 100vh; overflow: hidden; background: transparent; }
     canvas { display: block; }
     #tooltip {
       position: absolute;
@@ -23,11 +23,35 @@
       pointer-events: none;
       z-index: 100;
     }
+    /* First-launch only: shown while every category's texture is
+       preloaded, so a larger pack doesn't flash blank/partial frames.
+       Never shown again once the pet is up — see renderer/app.js. */
+    #loading {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #loading .spinner {
+      width: 40%;
+      height: 40%;
+      max-width: 24px;
+      max-height: 24px;
+      border-radius: 50%;
+      border: 2px solid rgba(255, 255, 255, 0.25);
+      border-top-color: rgba(255, 255, 255, 0.85);
+      animation: peon-spin 0.8s linear infinite;
+    }
+    @keyframes peon-spin {
+      to { transform: rotate(360deg); }
+    }
   </style>
 </head>
 <body>
   <canvas id="c"></canvas>
   <div id="tooltip"></div>
+  <div id="loading"><div class="spinner"></div></div>
   <script type="module" src="app.js"></script>
 </body>
 </html>

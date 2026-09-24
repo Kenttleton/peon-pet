@@ -1,7 +1,6 @@
-
 import * as THREE from '../node_modules/three/build/three.module.js';
 
-// --- Renderer / scene (created eagerly; sized once config arrives) ---
+// --- Renderer / scene (created eagerly; sized once the first category plays) ---
 const canvas = document.getElementById('c');
 const renderer = new THREE.WebGLRenderer({
   canvas,
@@ -16,28 +15,76 @@ const camera = new THREE.OrthographicCamera(-100, 100, 100, -100, 0.1, 10);
 camera.position.z = 1;
 
 // --- Texture cache, keyed by the resolved peon-asset:// URL main.js sent us ---
+// Multiple categories commonly share one atlas file; main.js already dedupes
+// the URL for that case (see toAssetUrl), so this cache also dedupes the
+// actual GPU upload — a shared atlas is only ever loaded once.
 const textureLoader = new THREE.TextureLoader();
 const textureCache = new Map();
 
-function loadTexture(url) {
+function loadTexture(url, onSettled) {
   let tex = textureCache.get(url);
-  if (tex) return tex;
-  tex = textureLoader.load(url, () => {
-    tex.magFilter = THREE.NearestFilter;
-    tex.minFilter = THREE.NearestFilter;
-    tex.generateMipmaps = false;
-    tex.needsUpdate = true;
-  });
+  if (tex) {
+    if (onSettled) onSettled();
+    return tex;
+  }
+  tex = textureLoader.load(
+    url,
+    () => {
+      tex.magFilter = THREE.NearestFilter;
+      tex.minFilter = THREE.NearestFilter;
+      tex.generateMipmaps = false;
+      tex.needsUpdate = true;
+      if (onSettled) onSettled();
+    },
+    undefined,
+    (err) => {
+      console.warn('[peon-pet] Failed to load texture:', url, err);
+      if (onSettled) onSettled();
+    }
+  );
   textureCache.set(url, tex);
   return tex;
 }
 
-// --- Sprite mesh (created once config arrives — filenames aren't known yet) ---
+// Every variant's texture, across every category, plus border/bg if
+// present — loaded once up front so a later category transition never has
+// to wait on a first-time load. See the #loading overlay in initScene.
+function collectAllUrls(config) {
+  const urls = [];
+  for (const variants of Object.values(config.animations || {})) {
+    for (const variant of variants) urls.push(variant.url);
+  }
+  if (config.assets?.bg) urls.push(config.assets.bg.url);
+  if (config.assets?.borders) urls.push(config.assets.borders.url);
+  return urls;
+}
+
+function preloadAllTextures(urls, onDone) {
+  const unique = [...new Set(urls)];
+  if (unique.length === 0) {
+    onDone();
+    return;
+  }
+  let remaining = unique.length;
+  for (const url of unique) {
+    loadTexture(url, () => {
+      remaining--;
+      if (remaining <= 0) onDone();
+    });
+  }
+}
+
+// --- Sprite/bg/border meshes (created lazily — sizes aren't known until the
+// first category plays; see applySize) ---
 let geometry = null;
 let material = null;
 let sprite = null;
 let bgMesh = null;
 let borderMesh = null;
+let pendingBgAsset = null;
+let pendingBorderAsset = null;
+let currentWinW = 0;
+let currentWinH = 0;
 
 // --- Flash overlay ---
 async function loadShader(url) {
@@ -50,7 +97,7 @@ let flashIntensity = 0;
 const flashColor = new THREE.Color(1, 1, 0);
 let flashDecay = 2.0;
 
-async function setupFlash(size) {
+async function setupFlash(width, height) {
   const vert = await loadShader('./shaders/flash.vert');
   const frag = await loadShader('./shaders/flash.frag');
 
@@ -65,7 +112,7 @@ async function setupFlash(size) {
     depthTest: false,
   });
 
-  const flashGeo = new THREE.PlaneGeometry(size, size);
+  const flashGeo = new THREE.PlaneGeometry(width, height);
   flashMesh = new THREE.Mesh(flashGeo, flashMat);
   flashMesh.position.z = 0.5;
   scene.add(flashMesh);
@@ -83,7 +130,7 @@ function triggerFlash(r, g, b, intensity = 0.6, decay = 3.0) {
 const MAX_DOTS = 10;
 const DOT_SIZE = 12;
 const DOT_GAP  = 6;
-const DOT_Y    = 88;
+const DOT_TOP_PADDING = 12; // px from the top edge, regardless of window size
 
 const DOT_VERT = `
   varying vec2 vUv;
@@ -138,6 +185,7 @@ function updateDots(sessions) {
   const count = Math.min(sessions.length, MAX_DOTS);
   const totalWidth = count * DOT_SIZE + Math.max(0, count - 1) * DOT_GAP;
   const startX = -totalWidth / 2 + DOT_SIZE / 2;
+  const y = currentWinH / 2 - DOT_TOP_PADDING;
 
   for (let i = 0; i < MAX_DOTS; i++) {
     const mesh = dotMeshes[i];
@@ -146,7 +194,7 @@ function updateDots(sessions) {
       const { hot, warm } = sessions[i];
       dotStates[i].active = hot;
       mesh.position.x = startX + i * (DOT_SIZE + DOT_GAP);
-      mesh.position.y = DOT_Y;
+      mesh.position.y = y;
       // hot = bright green pulsing, warm = dim green static, else grey
       u.dotColor.value.set(hot ? 0x44ff44 : warm ? 0x1a4d1a : 0x333333);
       u.visible.value = 1.0;
@@ -246,6 +294,8 @@ let idleTimer = null;
 const IDLE_TIMEOUT_MS = 30000;
 let isSubAgent = false;
 let anySessionActive = false;
+let scale = 1;         // user's --scale / config "scale", resolved once in main.js
+let borderMargin = 0;  // 0 unless the user enabled borders AND the pack has one
 
 // Per-category "last played variant" — process-lifetime only, per CEAP's
 // variant-selection algorithm (docs/ceap-spec.md#variant-selection).
@@ -266,6 +316,85 @@ function resetIdleTimer() {
   idleTimer = setTimeout(() => {
     if (!isSubAgent && !anySessionActive) playAnim('sleeping');
   }, IDLE_TIMEOUT_MS);
+}
+
+// Resizes the window (via main.js) and the local scene to match `variant`'s
+// own displayWidth/displayHeight — CEAP sizing is per-file, not per-pack,
+// so this runs on every transition, not just once at startup. The sprite/
+// bg always render at their exact declared size; a border (if the user
+// enabled one and the pack has one) grows the *window* around them rather
+// than shrinking the sprite to fit — see lib/pet-size.js.
+function applySize(variant) {
+  const spriteSize = window.peonBridge.computeWindowSize(variant, { margin: 0, scale, subAgent: isSubAgent });
+  const winSize = window.peonBridge.computeWindowSize(variant, { margin: borderMargin, scale, subAgent: isSubAgent });
+  const winW = Math.round(winSize.width);
+  const winH = Math.round(winSize.height);
+  const spriteW = spriteSize.width;
+  const spriteH = spriteSize.height;
+
+  if (sprite && winW === currentWinW && winH === currentWinH) return;
+  currentWinW = winW;
+  currentWinH = winH;
+
+  window.peonBridge.resizePet({ width: winW, height: winH });
+
+  document.documentElement.style.width = `${winW}px`;
+  document.documentElement.style.height = `${winH}px`;
+  document.body.style.width = `${winW}px`;
+  document.body.style.height = `${winH}px`;
+
+  renderer.setSize(winW, winH);
+
+  camera.left = -winW / 2;
+  camera.right = winW / 2;
+  camera.top = winH / 2;
+  camera.bottom = -winH / 2;
+  camera.updateProjectionMatrix();
+
+  if (geometry) geometry.dispose();
+  geometry = new THREE.PlaneGeometry(spriteW, spriteH);
+  if (sprite) {
+    sprite.geometry = geometry;
+  } else {
+    material = new THREE.MeshBasicMaterial({ map: null, transparent: true, alphaTest: 0.01 });
+    sprite = new THREE.Mesh(geometry, material);
+    scene.add(sprite);
+  }
+
+  if (pendingBgAsset) {
+    if (bgMesh) {
+      bgMesh.geometry.dispose();
+      bgMesh.geometry = new THREE.PlaneGeometry(spriteW, spriteH);
+    } else {
+      bgMesh = new THREE.Mesh(
+        new THREE.PlaneGeometry(spriteW, spriteH),
+        new THREE.MeshBasicMaterial({ map: loadTexture(pendingBgAsset.url), transparent: true })
+      );
+      bgMesh.position.z = -0.5;
+      scene.add(bgMesh);
+    }
+  }
+
+  if (pendingBorderAsset) {
+    if (borderMesh) {
+      borderMesh.geometry.dispose();
+      borderMesh.geometry = new THREE.PlaneGeometry(winW, winH);
+    } else {
+      borderMesh = new THREE.Mesh(
+        new THREE.PlaneGeometry(winW, winH),
+        new THREE.MeshBasicMaterial({ map: loadTexture(pendingBorderAsset.url), transparent: true, depthTest: false })
+      );
+      borderMesh.position.z = 0.4;
+      scene.add(borderMesh);
+    }
+  }
+
+  if (flashMesh) {
+    flashMesh.geometry.dispose();
+    flashMesh.geometry = new THREE.PlaneGeometry(winW, winH);
+  } else {
+    setupFlash(winW, winH); // async; flashMesh is null until shaders load
+  }
 }
 
 function setFrame(frame) {
@@ -302,6 +431,7 @@ function playAnim(animName) {
   frameTimer = 0;
   const loops = currentVariant.loops ?? REACTION_LOOPS;
   remainingLoops = (animName !== 'sleeping') ? loops - 1 : 0;
+  applySize(currentVariant);
   setFrame(0);
   if (ANIM_FLASH[animName]) {
     ANIM_FLASH[animName]();
@@ -320,10 +450,10 @@ function hitTestDots(px, py) {
   if (count === 0) return -1;
   const totalWidth = count * DOT_SIZE + Math.max(0, count - 1) * DOT_GAP;
   const startThreeX = -totalWidth / 2 + DOT_SIZE / 2;
-  const dotCanvasY = 100 - DOT_Y;  // Three.js DOT_Y=88 → canvas pixel y=12
-  const HIT_R = DOT_SIZE;           // slightly wider than visual for easier hover
+  const dotCanvasY = DOT_TOP_PADDING; // winH/2 - (winH/2 - DOT_TOP_PADDING)
+  const HIT_R = DOT_SIZE;              // slightly wider than visual for easier hover
   for (let i = 0; i < count; i++) {
-    const dotCanvasX = startThreeX + i * (DOT_SIZE + DOT_GAP) + 100;
+    const dotCanvasX = startThreeX + i * (DOT_SIZE + DOT_GAP) + currentWinW / 2;
     const dx = px - dotCanvasX;
     const dy = py - dotCanvasY;
     if (dx * dx + dy * dy < HIT_R * HIT_R) return i;
@@ -390,8 +520,8 @@ function handleMouseMove(e) {
   // Position tooltip: prefer to the right/below cursor, clamped inside window
   const tw = tooltip.offsetWidth;
   const th = tooltip.offsetHeight;
-  tooltip.style.left = Math.min(px + 6, 200 - tw - 2) + 'px';
-  tooltip.style.top  = Math.min(py + 6, 200 - th - 2) + 'px';
+  tooltip.style.left = Math.min(px + 6, currentWinW - tw - 2) + 'px';
+  tooltip.style.top  = Math.min(py + 6, currentWinH - th - 2) + 'px';
 }
 
 function handleMouseLeave() {
@@ -401,62 +531,19 @@ function handleMouseLeave() {
 canvas.addEventListener('mousemove', handleMouseMove);
 canvas.addEventListener('mouseleave', handleMouseLeave);
 
-// --- One-time scene init, driven by the resolved CEAP pack over IPC ---
+// --- One-time setup, driven by the resolved CEAP pack over IPC ---
 function initScene(config) {
   isSubAgent = !!config.subAgent;
+  scale = config.scale ?? 1;
   ANIM_CONFIG = config.animations || {};
-  const size = config.size;
-
-  document.documentElement.style.width = `${size}px`;
-  document.documentElement.style.height = `${size}px`;
-  document.body.style.width = `${size}px`;
-  document.body.style.height = `${size}px`;
-
-  renderer.setSize(size, size);
-
-  const half = size / 2;
-  camera.left = -half;
-  camera.right = half;
-  camera.top = half;
-  camera.bottom = -half;
-  camera.updateProjectionMatrix();
-
-  const inner = size * 0.9;
-
-  // No cross-pack fallback for bg/borders (docs/ceap-spec.md#asset-fallback):
-  // a pack that omits either gets no such layer, not orc's — so the mesh is
-  // only created when the resolved asset is actually present. No grey/white
-  // placeholder plane stands in for a missing one.
-  const bgAsset = config.assets?.bg;
-  if (bgAsset) {
-    bgMesh = new THREE.Mesh(
-      new THREE.PlaneGeometry(inner, inner),
-      new THREE.MeshBasicMaterial({ map: loadTexture(bgAsset.url), transparent: true })
-    );
-    bgMesh.position.z = -0.5;
-    scene.add(bgMesh);
-  }
-
-  geometry = new THREE.PlaneGeometry(inner, inner);
-  material = new THREE.MeshBasicMaterial({
-    map: null,
-    transparent: true,
-    alphaTest: 0.01,
-  });
-  sprite = new THREE.Mesh(geometry, material);
-  scene.add(sprite);
-
-  const borderAsset = config.assets?.borders;
-  if (borderAsset) {
-    borderMesh = new THREE.Mesh(
-      new THREE.PlaneGeometry(size, size),
-      new THREE.MeshBasicMaterial({ map: loadTexture(borderAsset.url), transparent: true, depthTest: false })
-    );
-    borderMesh.position.z = 0.4;
-    scene.add(borderMesh);
-  }
-
-  setupFlash(size);
+  // No cross-pack fallback for bg/borders (docs/ceap-spec.md#asset-fallback)
+  // — a pack that omits either (or a border the user hasn't enabled) gets
+  // no such layer, not orc's. main.js already applies the border-enabled
+  // gate before this ever arrives: config.assets.borders is only present
+  // when the user opted in AND the pack has one.
+  pendingBgAsset = config.assets?.bg ?? null;
+  pendingBorderAsset = config.assets?.borders ?? null;
+  borderMargin = pendingBorderAsset?.margin ?? 0;
 
   // Sub-agent windows: no dots, no tooltip
   if (isSubAgent) {
@@ -470,8 +557,16 @@ function initScene(config) {
     canvas.removeEventListener('mouseleave', handleMouseLeave);
   }
 
-  playAnim('sleeping');
-  requestAnimationFrame(animate);
+  // First-launch loading gate: every category's texture (across every
+  // variant) loads up front, so a category transition during real use
+  // never waits on a first-time load — see docs/ceap-spec.md and
+  // CONTRIBUTING.md. Never shown again after this.
+  const loadingEl = document.getElementById('loading');
+  preloadAllTextures(collectAllUrls(config), () => {
+    if (loadingEl) loadingEl.style.display = 'none';
+    playAnim('sleeping');
+    requestAnimationFrame(animate);
+  });
 }
 
 // --- IPC events ---
