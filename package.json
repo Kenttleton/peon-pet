@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "electron .",
-    "dev": "electron . --dev",
+    "dev": "node scripts/dev.js",
     "test": "jest",
     "test:watch": "jest --watch"
   },
