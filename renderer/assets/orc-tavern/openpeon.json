@@ -5,16 +5,67 @@
   "version": "1.0.0",
   "render_density": 0.7,
   "categories": {
-    "sleeping":  [{ "file": "sprite-atlas.png", "row": 0, "rows": 6, "frames": 10, "fps": 3, "loop": true }],
-    "waking":    [{ "file": "sprite-atlas.png", "row": 4, "rows": 6, "frames": 10, "fps": 8, "loop": false, "loops": 1 }],
-    "typing":    [{ "file": "sprite-atlas.png", "row": 5, "rows": 6, "frames": 10, "fps": 8 }],
-    "alarmed":   [{ "file": "sprite-atlas.png", "row": 2, "rows": 6, "frames": 10, "fps": 8 }],
-    "celebrate": [{ "file": "sprite-atlas.png", "row": 1, "rows": 6, "frames": 10, "fps": 8 }],
-    "annoyed":   [{ "file": "sprite-atlas.png", "row": 3, "rows": 6, "frames": 10, "fps": 8 }]
+    "sleeping": [
+      {
+        "file": "sprite-atlas.png",
+        "row": 0,
+        "rows": 6,
+        "frames": 10,
+        "fps": 3,
+        "loop": true
+      }
+    ],
+    "waking": [
+      {
+        "file": "sprite-atlas.png",
+        "row": 4,
+        "rows": 6,
+        "frames": 10,
+        "fps": 8,
+        "loop": false,
+        "loops": 1
+      }
+    ],
+    "typing": [
+      {
+        "file": "sprite-atlas.png",
+        "row": 5,
+        "rows": 6,
+        "frames": 10,
+        "fps": 8
+      }
+    ],
+    "alarmed": [
+      {
+        "file": "sprite-atlas.png",
+        "row": 2,
+        "rows": 6,
+        "frames": 10,
+        "fps": 8
+      }
+    ],
+    "celebrate": [
+      {
+        "file": "sprite-atlas.png",
+        "row": 1,
+        "rows": 6,
+        "frames": 10,
+        "fps": 8
+      }
+    ],
+    "annoyed": [
+      {
+        "file": "sprite-atlas.png",
+        "row": 3,
+        "rows": 6,
+        "frames": 10,
+        "fps": 8
+      }
+    ]
   },
   "assets": {
     "dock-icon": { "file": "dock-icon.png" },
-    "borders":   { "file": "borders.png", "margin": { "x": 27, "y": 22 } },
-    "bg":        { "file": "bg.png" }
+    "borders": { "file": "borders.png", "margin": { "x": 55, "y": 48 } },
+    "bg": { "file": "bg.png" }
   }
 }
