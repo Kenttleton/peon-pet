@@ -39,6 +39,7 @@ peon-pet packs use capybara    # switch active pack
 peon-pet scale [value]         # get or set scale (positive number)
 peon-pet border [on|off]       # get or set borders
 peon-pet corner [pos]          # get or set corner (bl, br, tl, tr)
+peon-pet corner-radius [px]   # get or set window corner radius (0 = square)
 peon-pet remote [url]          # get or set peon-ping remote URL
 peon-pet status                # show current config
 peon-pet status --verbose      # + config file path and LaunchAgent state

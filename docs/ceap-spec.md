@@ -140,6 +140,18 @@ read from the active pack's own manifest only, defaulting to `1` (native
 pixels = on-screen pixels) when absent — see [Fallback
 Behavior](#fallback-behavior).
 
+### `corner_radius`
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `corner_radius` | number (non-negative, finite) | `0` | Clip radius applied to the entire on-screen window, in native pixels, divided by `render_density`. |
+
+The corner radius clips the whole window — sprite, `bg`, and `borders` all clip together. It is in the same native-pixel space as `margin`: divide by `render_density` to get the display-pixel value the player applies. An artist working at `render_density: 3.4` who wants a 12 display-pixel radius declares `"corner_radius": 41` (12 × 3.4, rounded).
+
+The default is `0` — square corners. A player MUST suppress the operating system's own window corner rounding (on macOS, `roundedCorners: false` on `BrowserWindow`) and apply only the pack-declared radius — or the user's override. This ensures corner rounding is always explicit in the manifest rather than inherited from OS defaults that vary across platform versions. A pack that omits `corner_radius` gets square corners, not whatever the OS would have applied.
+
+A user MAY override the pack's value via a `cornerRadius` config field (a non-negative display-pixel number — already in display space, independent of any pack's density). Set to `0` to force square corners regardless of what the pack declares. When `cornerRadius` is absent, the pack's `corner_radius` (density-adjusted) applies. This mirrors the `border` pattern: the manifest declares the artist's intent; the user can change or suppress it.
+
 ### `categories`
 
 An object keyed by category name (see [Event Categories](#event-categories)
@@ -406,6 +418,10 @@ categories. peon-pet's mapping (`lib/session-tracker.js`):
   timer, independent of the sprite's current category — an ambient effect
   keeps playing through `sleeping`, `typing`, and every reaction without
   regard to what the sprite is doing.
+- A player MUST suppress the OS window corner rounding and apply only the
+  pack's `corner_radius` (density-adjusted) unless the user's `cornerRadius`
+  config field overrides it. Both `0` and absent `corner_radius` mean square
+  corners — the OS default MUST NOT substitute.
 
 ### Variant selection
 
@@ -670,6 +686,7 @@ for adopting this spec, not the schema itself:
   each copied legacy folder, applying the fixed 6×6 row layout
   `lib/ceap-migration.js`'s `LEGACY_ROW_LAYOUT` already encodes for
   `character.json`-based folders.
+- **Corner radius.** `BrowserWindow` must be created with `roundedCorners: false` (macOS) to suppress the OS default. The pack's `corner_radius` (÷ `render_density`) — or the user's `cornerRadius` config override — is then applied as a CSS `border-radius` on the `<html>`/`<body>` element (or as a WebGL clip, if the renderer does its own compositing) with `overflow: hidden`. The clip covers the whole window: sprite, `bg`, and `borders` together. When `corner_radius` is absent or `0` and no user override is set, nothing is applied and the window is square.
 - **Animated border/bg rendering.** `borderMesh`/`bgMesh` in
   `renderer/app.js` are currently a single static texture each. An
   animated asset needs its own frame timer and its own UV update on the
