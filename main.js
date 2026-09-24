@@ -437,24 +437,28 @@ function syncRemoteSessionsToTracker(state) {
   sendSessionUpdate(now);
 }
 
+let pollingWatcher = null;
+let heartbeatInterval = null;
+let remoteInterval = null;
+
 function startPolling() {
   const cfg = loadPetConfig();
   const remoteUrl = cfg.remoteUrl || 'http://127.0.0.1:19998';
 
-  const watcher = new JsonlWatcher();
+  pollingWatcher = new JsonlWatcher();
 
-  watcher.on('session-event', handleSessionEvent);
-  watcher.on('subagent-event', ({ parentToolId, event }) => {
+  pollingWatcher.on('session-event', handleSessionEvent);
+  pollingWatcher.on('subagent-event', ({ parentToolId, event }) => {
     if (event === 'SubagentStart') createSubAgentWindow(parentToolId);
     if (event === 'SubagentStop')  destroySubAgentWindow(parentToolId);
   });
 
-  watcher.start();
+  pollingWatcher.start();
 
   // Heartbeat: refresh session hot/warm status so the pet correctly decays.
   // Sessions with pending tools are kept hot so the pet stays awake during long tool runs.
   // Also runs the TTL sweep for sub-agent windows whose SubagentStop never fired.
-  setInterval(() => {
+  heartbeatInterval = setInterval(() => {
     const now = Date.now();
     const expired = [...subAgentCreatedAt.entries()]
       .filter(([sid, createdAt]) => now - createdAt > SUB_AGENT_TTL_MS && !dummySessionIds.has(sid))
@@ -462,14 +466,14 @@ function startPolling() {
     for (const sid of expired) destroySubAgentWindow(sid);
 
     if (tracker.entries().length === 0) return;
-    for (const sessionId of watcher.getActiveSessionIds()) {
+    for (const sessionId of pollingWatcher.getActiveSessionIds()) {
       tracker.update(sessionId, now);
     }
     sendSessionUpdate(now);
   }, 5000);
 
   // Remote relay sync (less frequent, not time-critical)
-  setInterval(async () => {
+  remoteInterval = setInterval(async () => {
     syncRemoteSessionsToTracker(await readRemoteState(remoteUrl));
   }, 5000);
 }
@@ -689,6 +693,18 @@ ipcMain.on('resize-pet', (event, { width, height }) => {
   } else {
     repositionSubAgentWindows();
   }
+});
+
+// Route OS signals through Electron's quit flow so before-quit / will-quit
+// handlers run and windows are destroyed cleanly.
+process.on('SIGINT',  () => app.quit());
+process.on('SIGTERM', () => app.quit());
+process.on('SIGHUP',  () => app.quit());
+
+app.on('before-quit', () => {
+  if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null; }
+  if (remoteInterval)    { clearInterval(remoteInterval);    remoteInterval = null; }
+  if (pollingWatcher)    { pollingWatcher.stop();             pollingWatcher = null; }
 });
 
 const gotLock = app.requestSingleInstanceLock();
