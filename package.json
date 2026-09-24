@@ -10,8 +10,37 @@
   "scripts": {
     "start": "node scripts/start.js",
     "dev": "node scripts/dev.js",
+    "build": "electron-builder --mac dir",
     "test": "jest",
     "test:watch": "jest --watch"
+  },
+  "build": {
+    "appId": "com.peonpet.app",
+    "productName": "Peon Pet",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**",
+      "lib/*.js",
+      "patches/**"
+    ],
+    "asarUnpack": [
+      "renderer/assets/**"
+    ],
+    "mac": {
+      "category": "public.app-category.utilities",
+      "target": [
+        {
+          "target": "dir",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ]
+    }
   },
   "jest": {
     "testEnvironment": "node",
@@ -26,6 +55,7 @@
   "devDependencies": {
     "canvas": "^3.2.3",
     "electron": "^44.4.3",
+    "electron-builder": "^26.15.3",
     "jest": "^30.5.2"
   },
   "overrides": {

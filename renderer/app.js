@@ -288,6 +288,7 @@ const ANIM_FLASH = {
 // unit), not a single config object — most categories today have exactly
 // one, but the schema always takes an array.
 let ANIM_CONFIG = {};
+let animLoopStarted = false; // guard against double-starting the RAF loop on re-init
 let currentAnim = 'sleeping';
 let currentVariant = null;   // the specific variant picked for currentAnim
 let currentFrame = 0;
@@ -538,21 +539,49 @@ canvas.addEventListener('mousemove', handleMouseMove);
 canvas.addEventListener('mouseleave', handleMouseLeave);
 
 // --- One-time setup, driven by the resolved CEAP pack over IPC ---
+// Safe to call again on config hot-reload: clears stale meshes, resets
+// animation config, and restarts sleeping — but never double-starts the RAF loop.
 function initScene(config) {
   isSubAgent = !!config.subAgent;
   scale = config.scale ?? 1;
   ANIM_CONFIG = config.animations || {};
+
+  // Clear per-pack variant history so the new pack starts fresh
+  for (const k of Object.keys(lastPlayedIndex)) delete lastPlayedIndex[k];
+
   // No cross-pack fallback for bg/borders (docs/ceap-spec.md#asset-fallback)
   // — a pack that omits either (or a border the user hasn't enabled) gets
   // no such layer, not orc's. main.js already applies the border-enabled
   // gate before this ever arrives: config.assets.borders is only present
   // when the user opted in AND the pack has one.
-  pendingBgAsset = config.assets?.bg ?? null;
-  pendingBorderAsset = config.assets?.borders ?? null;
-  borderMargin = pendingBorderAsset?.displayMargin ?? { x: 0, y: 0 };
+  const newBgAsset = config.assets?.bg ?? null;
+  const newBorderAsset = config.assets?.borders ?? null;
+  borderMargin = newBorderAsset?.displayMargin ?? { x: 0, y: 0 };
 
-  // Sub-agent windows: no dots, no tooltip
-  if (isSubAgent) {
+  // Remove stale bg/border meshes if the new config no longer has them,
+  // or if the asset URL changed (pack switch). They'll be recreated lazily
+  // by the next applySize() call.
+  if (bgMesh && (!newBgAsset || newBgAsset.url !== pendingBgAsset?.url)) {
+    scene.remove(bgMesh);
+    bgMesh.geometry.dispose();
+    bgMesh.material.dispose();
+    bgMesh = null;
+  }
+  if (borderMesh && (!newBorderAsset || newBorderAsset.url !== pendingBorderAsset?.url)) {
+    scene.remove(borderMesh);
+    borderMesh.geometry.dispose();
+    borderMesh.material.dispose();
+    borderMesh = null;
+  }
+  // Force applySize to re-run by invalidating the cached window dimensions
+  currentWinW = 0;
+  currentWinH = 0;
+
+  pendingBgAsset = newBgAsset;
+  pendingBorderAsset = newBorderAsset;
+
+  // Sub-agent windows: no dots, no tooltip (idempotent — guards against re-init)
+  if (isSubAgent && dotMeshes[0]?.parent === scene) {
     for (const mesh of dotMeshes) {
       scene.remove(mesh);
       mesh.geometry.dispose();
@@ -562,15 +591,16 @@ function initScene(config) {
     canvas.removeEventListener('mouseleave', handleMouseLeave);
   }
 
-  // First-launch loading gate: every category's texture (across every
-  // variant) loads up front, so a category transition during real use
-  // never waits on a first-time load — see docs/ceap-spec.md and
-  // CONTRIBUTING.md. Never shown again after this.
+  // Loading gate: preload all textures for the new pack, then play sleeping.
+  // The RAF loop is only started once — subsequent re-inits skip it.
   const loadingEl = document.getElementById('loading');
   preloadAllTextures(collectAllUrls(config), () => {
     if (loadingEl) loadingEl.style.display = 'none';
     playAnim('sleeping');
-    requestAnimationFrame(animate);
+    if (!animLoopStarted) {
+      animLoopStarted = true;
+      requestAnimationFrame(animate);
+    }
   });
 }
 

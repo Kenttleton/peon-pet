@@ -192,11 +192,10 @@ function listBundledPetNames(assetsDir) {
     .sort();
 }
 
-// Returns the registered protocol info, or null if `pet` doesn't resolve to
-// any valid pack — a misspelled or nonexistent name is a mistake the user
-// should be told about immediately, not one that silently degrades to orc.
-function registerPetProtocol() {
-  const cfg = loadPetConfig();
+// Resolves and loads the active pack into `resolvedPack` + asset token maps.
+// Returns { displayName } on success, or null on error. Does NOT touch the
+// protocol handler — call this both at startup and on hot-reload.
+function reloadPack(cfg) {
   const pet = argPet || cfg.pet || 'orc';
   const assetsDir = path.join(__dirname, 'renderer', 'assets');
   const defaultBundledDir = path.join(assetsDir, 'orc');
@@ -232,7 +231,23 @@ function registerPetProtocol() {
     return null;
   }
 
+  // Rebuild token maps so new pack assets get fresh URLs; old tokens remain
+  // valid in the protocol handler (renderer texture cache deduplicates by URL,
+  // so old pack textures just sit unused in GPU memory — acceptable).
+  assetPathsByToken.clear();
+  assetTokensByPath.clear();
+  nextAssetToken = 0;
+
   resolvedPack = resolvePack(activeManifest, activeDir, defaultManifest, defaultBundledDir);
+  return { displayName: activeManifest.display_name };
+}
+
+// Sets up the peon-asset:// protocol handler once at startup.
+// The handler closes over the module-level maps, so calling reloadPack()
+// later automatically changes what the handler resolves without re-registering.
+function registerPetProtocol(cfg) {
+  const packInfo = reloadPack(cfg);
+  if (!packInfo) return null;
 
   // Every token this protocol is ever asked for was minted by toAssetUrl()
   // from a path inside resolvedPack, in this same process — the renderer
@@ -246,7 +261,7 @@ function registerPetProtocol() {
     return net.fetch('file://' + absPath);
   });
 
-  return { pet, assetsDir, defaultBundledDir, displayName: activeManifest.display_name };
+  return packInfo;
 }
 
 const tracker = createSessionTracker();
@@ -591,6 +606,67 @@ function buildDockMenu() {
 
 const { WIN_MARGIN, cornerPosition } = require('./lib/window-position');
 
+// Applies a config update in-place: re-resolves pack/scale/border and pushes
+// new peon-config to all live windows. No restart needed for any setting.
+async function applyConfigHotReload() {
+  const cfg = loadPetConfig();
+  const newScale = resolveScale(cfg);
+  if (newScale !== null) scale = newScale;
+  borderEnabled = resolveBorderEnabled(cfg);
+
+  const packInfo = reloadPack(cfg);
+  if (packInfo) {
+    app.setName(packInfo.displayName);
+    if (process.platform === 'darwin') {
+      app.dock.setMenu(buildDockMenu());
+      setupDockIcon();
+    }
+  }
+
+  const ipcConfig = {
+    subAgent: false,
+    scale,
+    animations: toIpcAnimations(resolvedPack.categories),
+    assets: toIpcAssets(resolvedPack.assets, borderEnabled),
+  };
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('peon-config', ipcConfig);
+  }
+  for (const [, subWin] of subAgentWindows) {
+    if (!subWin.isDestroyed()) {
+      subWin.webContents.send('peon-config', {
+        ...ipcConfig,
+        subAgent: true,
+      });
+    }
+  }
+
+  // Restart remote polling if the URL changed
+  if (remoteInterval) {
+    clearInterval(remoteInterval);
+    const remoteUrl = cfg.remoteUrl || 'http://127.0.0.1:19998';
+    remoteInterval = setInterval(async () => {
+      syncRemoteSessionsToTracker(await readRemoteState(remoteUrl));
+    }, 5000);
+  }
+}
+
+// Watches the config file for changes and applies them in-place.
+// Watching the directory (not the file) handles atomic writes that replace
+// the file rather than modifying it in place. A 1 s debounce covers both
+// rapid CLI commands and editors that emit multiple events per save.
+function watchConfig() {
+  const userDataDir = app.getPath('userData');
+  let reloadTimer = null;
+  try {
+    fs.watch(userDataDir, { persistent: false }, (event, filename) => {
+      if (filename !== 'peon-pet-config.json') return;
+      clearTimeout(reloadTimer);
+      reloadTimer = setTimeout(() => applyConfigHotReload(), 1000);
+    });
+  } catch {}
+}
+
 // Applies a macOS squircle clip mask to the pack's dock-icon so it looks like
 // other icons in the Dock. Uses the canvas devDep; falls back to the raw path
 // when canvas is unavailable (e.g. a packaged/distributed build).
@@ -762,7 +838,7 @@ if (!gotLock) {
     }
     borderEnabled = resolveBorderEnabled(cfg);
 
-    const packInfo = registerPetProtocol();
+    const packInfo = registerPetProtocol(cfg);
     if (!packInfo) {
       app.exit(1);
       return;
@@ -773,6 +849,7 @@ if (!gotLock) {
       app.dock.setMenu(buildDockMenu());
       setupDockIcon();
     }
+    watchConfig();
   });
   app.on('window-all-closed', () => app.quit());
 }

@@ -21,9 +21,11 @@ npm install
 npm start
 ```
 
-Check your dock for the Peon-Ping logo — right-click it for controls.
+Check your dock for the app icon — right-click it for controls.
 
 ## CLI
+
+The CLI is how you control the running app. Commands like `peon-pet scale 1.5` or `peon-pet packs use capybara` write to a config file that the app watches — changes appear on screen within about a second, no restart needed.
 
 After `npm install`, link the CLI binary onto your PATH once:
 
@@ -35,12 +37,12 @@ Then `peon-pet` is available globally:
 
 ```
 peon-pet packs list            # list available packs, * = active
-peon-pet packs use capybara    # switch active pack
-peon-pet scale [value]         # get or set scale (positive number)
-peon-pet border [on|off]       # get or set borders
-peon-pet corner [pos]          # get or set corner (bl, br, tl, tr)
-peon-pet corner-radius [px]   # get or set window corner radius (0 = square)
-peon-pet remote [url]          # get or set peon-ping remote URL
+peon-pet packs use capybara    # switch active pack (live, ~1 s)
+peon-pet scale [value]         # get or set scale (positive number, live)
+peon-pet border [on|off]       # get or set borders (live)
+peon-pet corner [pos]          # get or set corner: bl, br, tl, tr (live)
+peon-pet corner-radius [px]   # get or set window corner radius (live)
+peon-pet remote [url]          # get or set peon-ping remote URL (live)
 peon-pet status                # show current config
 peon-pet status --verbose      # + config file path and LaunchAgent state
 peon-pet install               # install as macOS LaunchAgent
@@ -49,21 +51,31 @@ peon-pet uninstall             # remove the LaunchAgent
 
 Without `npm link`, prefix any command with `node bin/peon-pet.js` or `./node_modules/.bin/peon-pet`.
 
-Config changes take effect on the next restart. Running `peon-pet <setting>` with no argument prints the current value.
+Running `peon-pet <setting>` with no argument prints the current value.
 
 ## Install permanently (auto-start at login)
+
+First build the packaged app — this produces a real `Peon Pet.app` bundle so the dock shows "Peon Pet" rather than "Electron":
+
+```bash
+npm run build
+```
+
+Then install the LaunchAgent:
 
 ```bash
 peon-pet install
 ```
 
-Installs a macOS LaunchAgent that starts peon-pet at login and restarts it if it quits. Logs go to `/tmp/peon-pet.log`.
+This registers a macOS LaunchAgent pointing at the built `Peon Pet.app` binary so peon-pet starts at login, restarts if it quits, and appears in the dock as **Peon Pet**. Logs go to `/tmp/peon-pet.log`.
 
 To remove:
 
 ```bash
 peon-pet uninstall
 ```
+
+> **Note:** `npm run build` is required before `peon-pet install`. If you skip it, `install` will exit with an error telling you to build first. After pulling updates you may want to rebuild before reinstalling so the LaunchAgent picks up any new bundled assets.
 
 ## Dock controls
 
@@ -103,8 +115,9 @@ Hover over a dot to see the project folder and status. Hover anywhere on the wid
 ## Development
 
 ```bash
-npm run dev    # starts with DevTools detached
-npm test       # runs Jest test suite (63 tests)
+npm run dev    # starts with DevTools detached (dock shows "Electron" — expected in dev)
+npm run build  # build Peon Pet.app to dist/mac-arm64/ for peon-pet install
+npm test       # runs Jest test suite
 ```
 
 Simulate an event by writing to the peon-ping state file:
@@ -142,7 +155,7 @@ one of those simply doesn't have it, rather than inheriting orc's.
 
 ```bash
 peon-pet packs list            # see what's available (* = active)
-peon-pet packs use capybara    # switch and restart
+peon-pet packs use capybara    # switch — app updates live
 ```
 
 For a one-shot override without changing the saved config:

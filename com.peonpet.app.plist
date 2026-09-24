@@ -8,8 +8,7 @@
 
   <key>ProgramArguments</key>
   <array>
-    <string>ELECTRON_BIN_PLACEHOLDER</string>
-    <string>APP_DIR_PLACEHOLDER</string>
+    <string>APP_BINARY_PLACEHOLDER</string>
   </array>
 
   <key>RunAtLoad</key>
