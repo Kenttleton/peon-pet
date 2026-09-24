@@ -34,8 +34,8 @@ const MAX_SUB_AGENT_WINDOWS = 5;
 const SUB_AGENT_BASE_Y_OFFSET = 170; // px from bottom of work area to main pet
 const SUB_AGENT_TTL_MS = 10 * 60 * 1000; // 10 min — destroy stale windows if SubagentStop never fired
 
-// --- Character system ---
-let resolvedPack = null; // { categories, assets } — set once in registerCharacterProtocol
+// --- Pet system ---
+let resolvedPack = null; // { categories, assets } — set once in registerPetProtocol
 
 // Maps an opaque token -> absolute filesystem path, so the peon-asset://
 // protocol never has to parse a real path out of a URL. A `standard: true`
@@ -79,7 +79,7 @@ function parseArgPath(flag) {
   return (i !== -1 && process.argv[i + 1]) ? process.argv[i + 1] : null;
 }
 
-const argCharacter = parseArgPath('--character');
+const argPet = parseArgPath('--pet');
 
 function loadPetConfig() {
   try {
@@ -89,36 +89,52 @@ function loadPetConfig() {
   } catch { return {}; }
 }
 
-function registerCharacterProtocol() {
+function listBundledPetNames(assetsDir) {
+  return fs.readdirSync(assetsDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .filter((entry) => fs.existsSync(path.join(assetsDir, entry.name, 'openpeon.json')))
+    .map((entry) => entry.name)
+    .sort();
+}
+
+// Returns the registered protocol info, or null if `pet` doesn't resolve to
+// any valid pack — a misspelled or nonexistent name is a mistake the user
+// should be told about immediately, not one that silently degrades to orc.
+function registerPetProtocol() {
   const cfg = loadPetConfig();
-  const char = argCharacter || cfg.character || 'orc';
+  const pet = argPet || cfg.pet || 'orc';
   const assetsDir = path.join(__dirname, 'renderer', 'assets');
   const defaultBundledDir = path.join(assetsDir, 'orc');
-  const bundledDir = path.join(assetsDir, char);
+  const bundledDir = path.join(assetsDir, pet);
   const petsDir = path.join(os.homedir(), '.openpeon', 'pets');
-  const customDir = path.join(petsDir, char);
+  const customDir = path.join(petsDir, pet);
 
   const defaultManifest = loadManifestFromDir(defaultBundledDir);
 
   let activeManifest = null;
-  let activeDir = bundledDir;
+  let activeDir = null;
+  let lastError = null;
   try {
     activeManifest = loadManifestFromDir(customDir);
     if (activeManifest) activeDir = customDir;
   } catch (err) {
-    console.warn(`[peon-pet] Ignoring invalid custom pack at ${customDir}: ${err.message}`);
+    console.warn(`[peon-pet] Ignoring invalid custom pack at ${customDir}, trying the bundled pack instead: ${err.message}`);
+    lastError = err;
   }
   if (!activeManifest) {
     try {
       activeManifest = loadManifestFromDir(bundledDir);
-      activeDir = bundledDir;
+      if (activeManifest) activeDir = bundledDir;
     } catch (err) {
-      console.warn(`[peon-pet] Ignoring invalid bundled pack at ${bundledDir}: ${err.message}`);
+      lastError = err;
     }
   }
+
   if (!activeManifest) {
-    activeManifest = defaultManifest;
-    activeDir = defaultBundledDir;
+    const available = listBundledPetNames(assetsDir).join(', ');
+    const reason = lastError ? lastError.message : `no pack found at ${bundledDir} or ${customDir}`;
+    console.error(`[peon-pet] Unknown or invalid pet "${pet}": ${reason}\nAvailable bundled pets: ${available}`);
+    return null;
   }
 
   resolvedPack = resolvePack(activeManifest, activeDir, defaultManifest, defaultBundledDir);
@@ -135,7 +151,7 @@ function registerCharacterProtocol() {
     return net.fetch('file://' + absPath);
   });
 
-  return { char, assetsDir, defaultBundledDir };
+  return { pet, assetsDir, defaultBundledDir };
 }
 
 const tracker = createSessionTracker();
@@ -539,7 +555,10 @@ if (!gotLock) {
     const petsDir = path.join(os.homedir(), '.openpeon', 'pets');
     migrateLegacyCharacters(legacyCharactersDir, petsDir);
 
-    registerCharacterProtocol();
+    if (!registerPetProtocol()) {
+      app.exit(1);
+      return;
+    }
     createWindow();
   });
   app.on('window-all-closed', () => app.quit());
