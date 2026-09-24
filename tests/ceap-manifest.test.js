@@ -9,6 +9,7 @@ const zlib = require('zlib');
 const {
   CATEGORIES,
   ASSET_KEYS,
+  ICONS_OS_KEYS,
   NAME_PATTERN,
   validateManifest,
   resolvePack,
@@ -63,8 +64,12 @@ describe('constants', () => {
     );
   });
 
-  test('ASSET_KEYS has the 3 fixed names', () => {
-    expect([...ASSET_KEYS].sort()).toEqual(['bg', 'borders', 'dock-icon']);
+  test('ASSET_KEYS has the 2 fixed overlay names (icons is handled separately)', () => {
+    expect([...ASSET_KEYS].sort()).toEqual(['bg', 'borders']);
+  });
+
+  test('ICONS_OS_KEYS has the 4 valid OS keys', () => {
+    expect([...ICONS_OS_KEYS].sort()).toEqual(['default', 'linux', 'macos', 'windows']);
   });
 
   test('NAME_PATTERN accepts lowercase-with-hyphen names', () => {
@@ -163,10 +168,55 @@ describe('validateManifest', () => {
     expect(validateManifest(m)).toEqual([]);
   });
 
-  test('rejects dock-icon declaring frames > 1', () => {
+  test('rejects an icons entry with frames > 1 on a leaf entry', () => {
     const m = validManifest();
-    m.assets['dock-icon'] = { file: 'dock-icon.png', frames: 2, fps: 4 };
-    expect(validateManifest(m).some(e => e.includes('dock-icon'))).toBe(true);
+    m.assets.icons = { default: { file: 'icon.png', frames: 2, fps: 4 } };
+    expect(validateManifest(m).some(e => e.includes('icons'))).toBe(true);
+  });
+
+  test('rejects an icons entry with frames > 1 inside a size map', () => {
+    const m = validManifest();
+    m.assets.icons = { macos: { icon_512x512: { file: 'icon.png', frames: 2, fps: 4 } } };
+    expect(validateManifest(m).some(e => e.includes('icons'))).toBe(true);
+  });
+
+  test('rejects an icons entry with an unknown OS key', () => {
+    const m = validManifest();
+    m.assets.icons = { amiga: { file: 'icon.png' } };
+    expect(validateManifest(m).some(e => e.includes('amiga'))).toBe(true);
+  });
+
+  test('rejects an icons entry with no known OS keys', () => {
+    const m = validManifest();
+    m.assets.icons = {};
+    expect(validateManifest(m).some(e => e.includes('icons'))).toBe(true);
+  });
+
+  test('rejects a macos size map with no size keys', () => {
+    const m = validManifest();
+    m.assets.icons = { macos: {} };
+    expect(validateManifest(m).some(e => e.includes('icons'))).toBe(true);
+  });
+
+  test('accepts an icons entry with only a default leaf key', () => {
+    const m = validManifest();
+    m.assets.icons = { default: { file: 'icon.png' } };
+    expect(validateManifest(m)).toEqual([]);
+  });
+
+  test('accepts an icons entry with a macos size map and global default', () => {
+    const m = validManifest();
+    m.assets.icons = {
+      macos: { icon_512x512: { file: 'icon-squircle.png' }, default: { file: 'icon-sm.png' } },
+      default: { file: 'icon.png' },
+    };
+    expect(validateManifest(m)).toEqual([]);
+  });
+
+  test('accepts an icons entry with a flat macos leaf and global default', () => {
+    const m = validManifest();
+    m.assets.icons = { macos: { file: 'icon-squircle.png' }, default: { file: 'icon.png' } };
+    expect(validateManifest(m)).toEqual([]);
   });
 
   test('accepts an animated borders/bg asset with frames + fps', () => {
@@ -272,9 +322,9 @@ describe('resolvePack', () => {
         celebrate: [{ file: 'orc-atlas.png', row: 4, rows: 6, frames: 6, fps: 8 }],
       },
       assets: {
-        'dock-icon': { file: 'orc-dock-icon.png' },
-        borders:     { file: 'orc-borders.png' },
-        bg:          { file: 'orc-bg.png' },
+        icons:   { default: { file: 'orc-dock-icon.png' } },
+        borders: { file: 'orc-borders.png' },
+        bg:      { file: 'orc-bg.png' },
       },
     });
   }
@@ -291,11 +341,78 @@ describe('resolvePack', () => {
     expect('celebrate' in categories).toBe(false);
   });
 
-  test('dock-icon falls back to the default pack when the active pack omits it', () => {
+  test('icons falls back to the default pack when the active pack omits it', () => {
     writeMinimalPng(path.join(defaultDir, 'orc-dock-icon.png'), 512, 512);
     const { assets } = resolvePack(makeActive(), activeDir, makeDefault(), defaultDir);
-    expect(assets['dock-icon'].file).toBe('orc-dock-icon.png');
-    expect(assets['dock-icon'].path).toBe(path.join(defaultDir, 'orc-dock-icon.png'));
+    // default key is present, no OS-specific key was matched
+    expect(assets.icons.file).toBe('orc-dock-icon.png');
+    expect(assets.icons.path).toBe(path.join(defaultDir, 'orc-dock-icon.png'));
+    expect(assets.icons.osSpecific).toBe(false);
+  });
+
+  test('icons picks the OS-specific leaf entry when the current platform key is a flat leaf', () => {
+    const osKey = { darwin: 'macos', win32: 'windows', linux: 'linux' }[process.platform];
+    if (!osKey) return; // skip on unknown platforms
+    writeMinimalPng(path.join(defaultDir, 'orc-squircle.png'), 512, 512);
+    writeMinimalPng(path.join(defaultDir, 'orc-dock-icon.png'), 512, 512);
+    const defaultWithOs = validManifest({
+      name: 'orc',
+      categories: {
+        sleeping: [{ file: 'orc-atlas.png', row: 0, rows: 6, frames: 6, fps: 3, loop: true }],
+        typing:   [{ file: 'orc-atlas.png', row: 2, rows: 6, frames: 6, fps: 8 }],
+      },
+      assets: {
+        icons: { [osKey]: { file: 'orc-squircle.png' }, default: { file: 'orc-dock-icon.png' } },
+      },
+    });
+    const { assets } = resolvePack(makeActive(), activeDir, defaultWithOs, defaultDir);
+    expect(assets.icons.file).toBe('orc-squircle.png');
+    expect(assets.icons.osSpecific).toBe(true);
+  });
+
+  test('icons with a size map exposes sizeMap with resolved paths for the current OS', () => {
+    const osKey = { darwin: 'macos', win32: 'windows', linux: 'linux' }[process.platform];
+    if (!osKey) return; // skip on unknown platforms
+    writeMinimalPng(path.join(defaultDir, 'orc-small.png'), 256, 256);
+    writeMinimalPng(path.join(defaultDir, 'orc-large.png'), 512, 512);
+    writeMinimalPng(path.join(defaultDir, 'orc-dock-icon.png'), 512, 512);
+    const defaultWithSizeMap = validManifest({
+      name: 'orc',
+      categories: {
+        sleeping: [{ file: 'orc-atlas.png', row: 0, rows: 6, frames: 6, fps: 3, loop: true }],
+        typing:   [{ file: 'orc-atlas.png', row: 2, rows: 6, frames: 6, fps: 8 }],
+      },
+      assets: {
+        icons: {
+          [osKey]: { icon_256x256: { file: 'orc-small.png' }, icon_512x512: { file: 'orc-large.png' }, default: { file: 'orc-dock-icon.png' } },
+          default: { file: 'orc-dock-icon.png' },
+        },
+      },
+    });
+    const { assets } = resolvePack(makeActive(), activeDir, defaultWithSizeMap, defaultDir);
+    // Top-level fallback is the last non-"default" size key
+    expect(assets.icons.file).toBe('orc-large.png');
+    expect(assets.icons.osSpecific).toBe(true);
+    // sizeMap has all three entries resolved to absolute paths
+    expect(assets.icons.sizeMap).toBeDefined();
+    expect(assets.icons.sizeMap.icon_256x256.file).toBe('orc-small.png');
+    expect(assets.icons.sizeMap.icon_256x256.path).toBe(path.join(defaultDir, 'orc-small.png'));
+    expect(assets.icons.sizeMap.icon_512x512.file).toBe('orc-large.png');
+    expect(assets.icons.sizeMap.default.file).toBe('orc-dock-icon.png');
+  });
+
+  test('icons from active pack takes precedence over default pack', () => {
+    writeMinimalPng(path.join(activeDir, 'my-icon.png'), 512, 512);
+    writeMinimalPng(path.join(defaultDir, 'orc-dock-icon.png'), 512, 512);
+    const activeWithIcons = makeActive({
+      assets: {
+        borders: { file: 'active-borders.png' },
+        icons: { default: { file: 'my-icon.png' } },
+      },
+    });
+    const { assets } = resolvePack(activeWithIcons, activeDir, makeDefault(), defaultDir);
+    expect(assets.icons.file).toBe('my-icon.png');
+    expect(assets.icons.path).toBe(path.join(activeDir, 'my-icon.png'));
   });
 
   test('bg has no fallback — absent from the result when the active pack omits it', () => {

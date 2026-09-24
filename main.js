@@ -667,45 +667,55 @@ function watchConfig() {
   } catch {}
 }
 
-// Applies a macOS squircle clip mask to the pack's dock-icon so it looks like
-// other icons in the Dock. Uses the canvas devDep; falls back to the raw path
-// when canvas is unavailable (e.g. a packaged/distributed build).
+// Sets the macOS dock icon from the pack's `assets.icons` entry.
+//
+// When the resolved entry has a `sizeMap`, picks the best PNG for the
+// current display scale factor by parsing the macOS ICNS key convention
+// (`icon_NxN` = @1x, `icon_NxN@2x` = @2x). Falls back to the entry's
+// default `path` when no size map is present or no match is found.
+// The `scaleFactor` passed to `createFromBuffer` tells Electron the logical
+// size of the PNG so it renders at the correct physical size on Retina.
 async function setupDockIcon() {
   if (process.platform !== 'darwin') return;
-  const dockIconEntry = resolvedPack?.assets?.['dock-icon'];
-  if (!dockIconEntry) return;
+  const iconEntry = resolvedPack?.assets?.icons;
+  if (!iconEntry) return;
 
-  try {
-    const { createCanvas, loadImage } = require('canvas');
-    const SIZE = 512;
-    const RADIUS = Math.round(SIZE * 0.225); // approx macOS squircle corner radius
+  const { nativeImage } = require('electron');
+  const { scaleFactor } = screen.getPrimaryDisplay();
 
-    const c = createCanvas(SIZE, SIZE);
-    const ctx = c.getContext('2d');
-
-    // Clip path: rounded rect matching macOS squircle
-    ctx.beginPath();
-    ctx.moveTo(RADIUS, 0);
-    ctx.lineTo(SIZE - RADIUS, 0);
-    ctx.arcTo(SIZE, 0, SIZE, RADIUS, RADIUS);
-    ctx.lineTo(SIZE, SIZE - RADIUS);
-    ctx.arcTo(SIZE, SIZE, SIZE - RADIUS, SIZE, RADIUS);
-    ctx.lineTo(RADIUS, SIZE);
-    ctx.arcTo(0, SIZE, 0, SIZE - RADIUS, RADIUS);
-    ctx.lineTo(0, RADIUS);
-    ctx.arcTo(0, 0, RADIUS, 0, RADIUS);
-    ctx.closePath();
-    ctx.clip();
-
-    const img = await loadImage(dockIconEntry.path);
-    ctx.drawImage(img, 0, 0, SIZE, SIZE);
-
-    const { nativeImage } = require('electron');
-    const { scaleFactor } = screen.getPrimaryDisplay();
-    app.dock.setIcon(nativeImage.createFromBuffer(c.toBuffer('image/png'), { scaleFactor }));
-  } catch {
-    app.dock.setIcon(dockIconEntry.path);
+  // Parse icon_WxH or icon_WxH@2x → { px, scale }
+  function parseIconKey(key) {
+    const m = key.match(/^icon_(\d+)x\d+(@2x)?$/);
+    if (!m) return null;
+    return { px: parseInt(m[1], 10), scale: m[2] ? 2 : 1 };
   }
+
+  let iconPath = iconEntry.path;
+  let iconScale = scaleFactor;
+
+  if (iconEntry.sizeMap) {
+    // Find the best size key for the current scale factor:
+    // prefer an @2x key whose @1x pt matches the display scale, falling
+    // back to the largest available size.
+    const candidates = Object.entries(iconEntry.sizeMap)
+      .filter(([k]) => k !== 'default')
+      .map(([k, v]) => ({ key: k, ...parseIconKey(k), ...v }))
+      .filter(c => c.px !== null);
+
+    // Sort by pixel size ascending
+    candidates.sort((a, b) => a.px - b.px);
+
+    // On a 2× display prefer @2x keys; on 1× prefer @1x; pick largest that matches
+    const preferred = candidates.filter(c => c.scale === Math.round(scaleFactor)).pop()
+      || candidates[candidates.length - 1];
+
+    if (preferred) {
+      iconPath  = preferred.path;
+      iconScale = preferred.scale;
+    }
+  }
+
+  app.dock.setIcon(nativeImage.createFromBuffer(fs.readFileSync(iconPath), { scaleFactor: iconScale }));
 }
 
 function createWindow() {

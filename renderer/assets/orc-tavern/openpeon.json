@@ -64,8 +64,33 @@
     ]
   },
   "assets": {
-    "dock-icon": { "file": "dock-icon.png" },
-    "borders": { "file": "borders.png", "margin": { "x": 55, "y": 48 } },
-    "bg": { "file": "bg.png" }
+    "borders": {
+      "file": "borders.png",
+      "margin": {
+        "x": 55,
+        "y": 48
+      }
+    },
+    "bg": {
+      "file": "bg.png"
+    },
+    "icons": {
+      "macos": {
+        "icon_16x16":      { "file": "icons/macos/icon_16x16.png" },
+        "icon_16x16@2x":   { "file": "icons/macos/icon_16x16@2x.png" },
+        "icon_32x32":      { "file": "icons/macos/icon_32x32.png" },
+        "icon_32x32@2x":   { "file": "icons/macos/icon_32x32@2x.png" },
+        "icon_128x128":    { "file": "icons/macos/icon_128x128.png" },
+        "icon_128x128@2x": { "file": "icons/macos/icon_128x128@2x.png" },
+        "icon_256x256":    { "file": "icons/macos/icon_256x256.png" },
+        "icon_256x256@2x": { "file": "icons/macos/icon_256x256@2x.png" },
+        "icon_512x512":    { "file": "icons/macos/icon_512x512.png" },
+        "icon_512x512@2x": { "file": "icons/macos/icon_512x512@2x.png" },
+        "default":         { "file": "dock-icon.png" }
+      },
+      "default": {
+        "file": "dock-icon.png"
+      }
+    }
   }
 }

@@ -221,11 +221,12 @@ locally instead.
 
 ```
 ~/.openpeon/pets/your-pet-name/
-  openpeon.json         ← required: manifest
-  sprite-atlas.png      ← your animation frames (name is your choice; must match openpeon.json)
-  borders.png           ← optional: decorative frame overlay
-  bg.png                ← optional: background texture
-  dock-icon.png         ← optional: macOS dock icon
+  openpeon.json              ← required: manifest
+  sprite-atlas.png           ← your animation frames (name is your choice; must match openpeon.json)
+  borders.png                ← optional: decorative frame overlay
+  bg.png                     ← optional: background texture
+  dock-icon.png              ← optional: generic/fallback app icon
+  dock-icon-squircle.png     ← optional: macOS dock icon (pre-clipped squircle)
 ```
 
 `openpeon.json`:
@@ -246,8 +247,14 @@ locally instead.
     "annoyed":   [{ "file": "sprite-atlas.png", "row": 5, "rows": 6, "frames": 6, "fps": 8 }]
   },
   "assets": {
-    "dock-icon": { "file": "dock-icon.png" },
-    "borders":   { "file": "borders.png" }
+    "icons": {
+      "macos": {
+        "icon_512x512": { "file": "dock-icon-squircle.png" },
+        "default":      { "file": "dock-icon.png" }
+      },
+      "default": { "file": "dock-icon.png" }
+    },
+    "borders": { "file": "borders.png" }
   }
 }
 ```
@@ -255,7 +262,7 @@ locally instead.
 `sleeping` and `typing` are required — every pet must provide both. The
 other four categories (`waking`, `alarmed`, `celebrate`, `annoyed`) are each
 optional: omit one and that event simply has no visible effect, it's never
-replaced by another animation (not orc's, not one of your own). `dock-icon`
+replaced by another animation (not orc's, not one of your own). `icons`
 falls back to orc's if you omit it; `borders` and `bg` do not — omit either
 and your pet renders with no such layer at all. `name` must match
 `^[a-z0-9][a-z0-9_-]{0,63}$`.
@@ -307,9 +314,9 @@ sprite. Not every pet needs one — some sprite art already has its own
 background baked in. Omit it and your pet renders with no background
 layer at all; it does **not** fall back to orc's.
 
-**`dock-icon.png`** (optional) — a 512 × 512 px PNG shown in the macOS dock
-when this pet is active, recognizable at small sizes (32–64 px). Defaults
-to orc's dock icon if omitted.
+**`dock-icon.png`** (optional) — the generic/fallback app icon. Used when no OS-specific icon matches the current platform.
+
+**`dock-icon-squircle.png`** (optional, macOS) — the macOS dock icon, 512 × 512 px, with the squircle clip mask pre-applied. Use `scripts/generate-dock-icons.js` to generate this from a square source icon. If omitted, peon-pet attempts to clip the fallback icon at runtime; if that also fails, the square icon is used as-is. Falls back to orc's icons if the whole `icons` block is omitted.
 
 ### Window Corner
 

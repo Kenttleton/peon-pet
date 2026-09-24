@@ -196,22 +196,113 @@ Both authoring styles are supported by the same schema:
 
 ### `assets`
 
-An object keyed by a fixed set of asset roles — the same three overlay
-files a bundled character maps today:
+An object keyed by a fixed set of asset roles:
 
 ```json
 "assets": {
-  "dock-icon": { "file": "dock-icon.png" },
-  "borders":   { "file": "borders.png" },
-  "bg":        { "file": "bg.png" }
+  "icons": {
+    "macos": {
+      "icon_512x512": { "file": "dock-icon-squircle.png" },
+      "default":      { "file": "dock-icon.png" }
+    },
+    "default": { "file": "dock-icon.png" }
+  },
+  "borders": { "file": "borders.png" },
+  "bg":      { "file": "bg.png" }
 }
 ```
 
 | Key | Description |
 |---|---|
-| `dock-icon` | macOS dock icon while this character is active. MUST be static — see below. |
+| `icons` | App icons, keyed by OS. See below. |
 | `borders` | Decorative overlay drawn on top of the sprite. MAY be static or animated. |
 | `bg` | Background texture drawn behind the sprite. MAY be static or animated. |
+
+#### `icons`
+
+An object whose keys are OS names (`macos`, `windows`, `linux`) and/or
+`default`. The player picks the key matching the current OS, falling back to
+`default`; if neither is present the default pack's `icons` is used instead.
+At least one key is required.
+
+Each OS value is either a **leaf entry** (`{ "file": "..." }`) or a
+**size map** — an object of named size keys, each holding a leaf entry.
+Size maps let pack authors provide multiple resolutions; the player picks the
+best available size for the current display. The presence of a top-level
+`file` key distinguishes the two shapes.
+
+**Leaf entry** (single file for this OS):
+
+```json
+"icons": {
+  "macos":   { "file": "dock-icon-squircle.png" },
+  "default": { "file": "dock-icon.png" }
+}
+```
+
+**Size map** (multiple resolutions for this OS):
+
+```json
+"icons": {
+  "macos": {
+    "icon_16x16":       { "file": "icon_16x16.png" },
+    "icon_16x16@2x":    { "file": "icon_16x16@2x.png" },
+    "icon_32x32":       { "file": "icon_32x32.png" },
+    "icon_32x32@2x":    { "file": "icon_32x32@2x.png" },
+    "icon_128x128":     { "file": "icon_128x128.png" },
+    "icon_128x128@2x":  { "file": "icon_128x128@2x.png" },
+    "icon_256x256":     { "file": "icon_256x256.png" },
+    "icon_256x256@2x":  { "file": "icon_256x256@2x.png" },
+    "icon_512x512":     { "file": "icon_512x512.png" },
+    "icon_512x512@2x":  { "file": "icon_512x512@2x.png" },
+    "default":          { "file": "dock-icon.png" }
+  },
+  "default": { "file": "dock-icon.png" }
+}
+```
+
+Size key naming conventions are **OS-specific**: macOS names match Apple's
+ICNS slot convention (`icon_NxN` and `icon_NxN@2x`); Windows and Linux may
+use their own conventions. The validator does not enforce size key names —
+any string key within an OS size map is accepted. A `default` key within a
+size map acts as the fallback for that OS when no matching size key is found.
+
+The player MUST pick the best available size for the current display from
+the size map. When in doubt, the last key (excluding `default`) in
+declaration order is used as the preferred fallback — so authors SHOULD list
+sizes smallest-first (the largest/best is last).
+
+Each leaf entry is a static asset:
+
+| Field | Required | Default | Description |
+|---|---|---|---|
+| `file` | yes | — | Path to the icon file, relative to the pack directory. |
+
+Leaf entries MUST NOT declare `frames` > 1 — a validator MUST reject it.
+Icons have no animation mechanism; players always render frame 0 only.
+
+A pack MAY omit `icons` entirely; in that case the default pack's `icons`
+is used (the only cross-pack fallback in CEAP). A pack that declares
+`icons` with no OS-specific key for the current platform falls back to that
+pack's own `default` key before going to the default pack.
+
+**Format notes by platform** (informational; enforced by the player, not by this spec):
+
+- **macOS** — PNG with the squircle clip mask pre-applied. macOS does not
+  apply the squircle to PNGs set via `app.dock.setIcon()`. Follow Apple's
+  icon spec: 1024 × 1024 px master canvas, 824 × 824 px inner content area
+  with ~100 px margins on all sides for drop shadow clearance, corner radius
+  ~185 px (continuous superellipse). For the `icon_512x512` ICNS slot, the
+  master is scaled down to 512 × 512 px (= 256pt logical at @2x Retina).
+  Use `scripts/generate-dock-icons.js` to generate compliant icons from a
+  square source.
+- **Windows** — ICO or PNG. ICO files may embed multiple sizes (16, 32, 48,
+  256 px); PNG is acceptable for a single size. peon-pet does not currently
+  run on Windows; this key is reserved for future use.
+- **Linux** — PNG. Standard sizes vary by desktop environment; 256 × 256 px
+  is a safe default. Reserved for future use.
+
+#### `borders` and `bg`
 
 `borders` and `bg` MAY be **animated**: a continuous, ambient effect (a
 lightning crackle, a shimmering glow) that loops independently of the
@@ -259,11 +350,6 @@ the person running it a way to opt in. peon-pet's player defaults to no
 border, opt-in via `--border` or a `border` config field (see
 [README.md](../README.md#pets)) — the pack's `margin` is only consulted
 once a border is actually going to render.
-
-`dock-icon` MUST NOT declare `frames` > 1 — a validator MUST reject it. A
-macOS dock icon has no animation mechanism to drive; players render frame 0
-only, so allowing the field would silently mislead an author into thinking
-it will animate.
 
 A pack MAY declare only the asset keys it overrides.
 
@@ -356,9 +442,9 @@ see [Player Behavior](#player-behavior).
 A pack is not required to provide every asset, and resolution differs by
 key:
 
-- **`dock-icon`** — falls back to the default pack, at load time:
-  1. The active pack's own manifest entry, if present.
-  2. The default pack's (`orc`) manifest entry.
+- **`icons`** — falls back to the default pack, at load time:
+  1. The active pack's own `icons` block (current OS key or `default`), if present.
+  2. The default pack's (`orc`) `icons` block.
 - **`borders` / `bg`** — no fallback. If the active pack's manifest omits
   the key, the player renders without that layer entirely; it never
   substitutes the default pack's (or any other pack's) asset. See the
@@ -477,9 +563,15 @@ renderer/assets/orc/
     "annoyed":   [{ "file": "sprite-atlas.png", "row": 5, "rows": 6, "frames": 6, "fps": 8 }]
   },
   "assets": {
-    "dock-icon": { "file": "dock-icon.png" },
-    "borders":   { "file": "borders.png" },
-    "bg":        { "file": "bg.png" }
+    "icons": {
+      "macos": {
+        "icon_512x512": { "file": "dock-icon-squircle.png" },
+        "default":      { "file": "dock-icon.png" }
+      },
+      "default": { "file": "dock-icon.png" }
+    },
+    "borders": { "file": "borders.png" },
+    "bg":      { "file": "bg.png" }
   }
 }
 ```
@@ -521,8 +613,14 @@ renderer/assets/capybara/
     "annoyed":   [{ "file": "sprite-atlas.png", "row": 5, "rows": 6, "frames": 6, "fps": 8 }]
   },
   "assets": {
-    "dock-icon": { "file": "dock-icon.png" },
-    "borders":   { "file": "borders.png" }
+    "icons": {
+      "macos": {
+        "icon_512x512": { "file": "dock-icon-squircle.png" },
+        "default":      { "file": "dock-icon.png" }
+      },
+      "default": { "file": "dock-icon.png" }
+    },
+    "borders": { "file": "borders.png" }
   }
 }
 ```
@@ -561,8 +659,14 @@ renderer/assets/hello-kitty/
     "annoyed":   [{ "file": "sprite-atlas.png", "row": 5, "rows": 6, "frames": 6, "fps": 8 }]
   },
   "assets": {
-    "dock-icon": { "file": "dock-icon.png" },
-    "borders":   { "file": "borders.png" }
+    "icons": {
+      "macos": {
+        "icon_512x512": { "file": "dock-icon-squircle.png" },
+        "default":      { "file": "dock-icon.png" }
+      },
+      "default": { "file": "dock-icon.png" }
+    },
+    "borders": { "file": "borders.png" }
   }
 }
 ```
@@ -624,9 +728,15 @@ sprite, independent of whatever the character itself is doing:
   "version": "1.1.0",
   "categories": { "...": "unchanged from the earlier orc example" },
   "assets": {
-    "dock-icon": { "file": "dock-icon.png" },
-    "borders":   { "file": "borders-lightning.png", "frames": 8, "fps": 12, "loop": true },
-    "bg":        { "file": "bg.png" }
+    "icons": {
+      "macos": {
+        "icon_512x512": { "file": "dock-icon-squircle.png" },
+        "default":      { "file": "dock-icon.png" }
+      },
+      "default": { "file": "dock-icon.png" }
+    },
+    "borders": { "file": "borders-lightning.png", "frames": 8, "fps": 12, "loop": true },
+    "bg":      { "file": "bg.png" }
   }
 }
 ```
