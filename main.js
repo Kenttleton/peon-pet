@@ -52,6 +52,7 @@ function ensureTooltipWindow() {
     show: false,
     transparent: true,
     frame: false,
+    roundedCorners: false,
     alwaysOnTop: true,
     skipTaskbar: true,
     resizable: false,
@@ -296,6 +297,7 @@ function createSubAgentWindow(sessionId) {
     y: 0, // provisional — repositionSubAgentWindows() below fixes this immediately
     transparent: true,
     frame: false,
+    roundedCorners: false,
     alwaysOnTop: true,
     skipTaskbar: true,
     resizable: false,
@@ -603,6 +605,7 @@ function createWindow() {
     y,
     transparent: true,
     frame: false,
+    roundedCorners: false,
     alwaysOnTop: true,
     skipTaskbar: true,
     resizable: false,
