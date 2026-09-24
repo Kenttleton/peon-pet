@@ -16,6 +16,10 @@ function reportSize() {
 
 window.tooltipBridge.onShow((html) => {
   el.innerHTML = html;
-  // Let layout settle before measuring the new content's natural size.
-  requestAnimationFrame(reportSize);
+  // Measure synchronously — getBoundingClientRect() forces a layout flush
+  // on demand, so no animation frame is needed. That matters here because
+  // requestAnimationFrame never fires for a hidden window (same throttling
+  // that pauses a backgrounded tab), and this window is hidden between
+  // every hover — deferring to rAF would mean it only ever shows once.
+  reportSize();
 });

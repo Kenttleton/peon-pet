@@ -4,6 +4,9 @@
   "version": "1.0.0-alpha.1",
   "description": "Desktop pet for Peon-Ping — an orc that reacts to peon-ping events",
   "main": "main.js",
+  "bin": {
+    "peon-pet": "./bin/peon-pet.js"
+  },
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
@@ -17,6 +20,7 @@
     ]
   },
   "dependencies": {
+    "commander": "^15.0.0",
     "three": "^0.186.0"
   },
   "devDependencies": {
