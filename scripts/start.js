@@ -2,4 +2,4 @@
 
 const { launchElectron } = require('../lib/electron-launcher');
 
-launchElectron(['--dev', ...process.argv.slice(2)]);
+launchElectron(process.argv.slice(2));

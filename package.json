@@ -8,7 +8,7 @@
     "peon-pet": "./bin/peon-pet.js"
   },
   "scripts": {
-    "start": "electron .",
+    "start": "node scripts/start.js",
     "dev": "node scripts/dev.js",
     "test": "jest",
     "test:watch": "jest --watch"

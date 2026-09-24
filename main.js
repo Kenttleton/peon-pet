@@ -246,7 +246,7 @@ function registerPetProtocol() {
     return net.fetch('file://' + absPath);
   });
 
-  return { pet, assetsDir, defaultBundledDir };
+  return { pet, assetsDir, defaultBundledDir, displayName: activeManifest.display_name };
 }
 
 const tracker = createSessionTracker();
@@ -591,6 +591,47 @@ function buildDockMenu() {
 
 const { WIN_MARGIN, cornerPosition } = require('./lib/window-position');
 
+// Applies a macOS squircle clip mask to the pack's dock-icon so it looks like
+// other icons in the Dock. Uses the canvas devDep; falls back to the raw path
+// when canvas is unavailable (e.g. a packaged/distributed build).
+async function setupDockIcon() {
+  if (process.platform !== 'darwin') return;
+  const dockIconEntry = resolvedPack?.assets?.['dock-icon'];
+  if (!dockIconEntry) return;
+
+  try {
+    const { createCanvas, loadImage } = require('canvas');
+    const SIZE = 512;
+    const RADIUS = Math.round(SIZE * 0.225); // approx macOS squircle corner radius
+
+    const c = createCanvas(SIZE, SIZE);
+    const ctx = c.getContext('2d');
+
+    // Clip path: rounded rect matching macOS squircle
+    ctx.beginPath();
+    ctx.moveTo(RADIUS, 0);
+    ctx.lineTo(SIZE - RADIUS, 0);
+    ctx.arcTo(SIZE, 0, SIZE, RADIUS, RADIUS);
+    ctx.lineTo(SIZE, SIZE - RADIUS);
+    ctx.arcTo(SIZE, SIZE, SIZE - RADIUS, SIZE, RADIUS);
+    ctx.lineTo(RADIUS, SIZE);
+    ctx.arcTo(0, SIZE, 0, SIZE - RADIUS, RADIUS);
+    ctx.lineTo(0, RADIUS);
+    ctx.arcTo(0, 0, RADIUS, 0, RADIUS);
+    ctx.closePath();
+    ctx.clip();
+
+    const img = await loadImage(dockIconEntry.path);
+    ctx.drawImage(img, 0, 0, SIZE, SIZE);
+
+    const { nativeImage } = require('electron');
+    const { scaleFactor } = screen.getPrimaryDisplay();
+    app.dock.setIcon(nativeImage.createFromBuffer(c.toBuffer('image/png'), { scaleFactor }));
+  } catch {
+    app.dock.setIcon(dockIconEntry.path);
+  }
+}
+
 function createWindow() {
   const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;
   const cfg = loadPetConfig();
@@ -622,14 +663,6 @@ function createWindow() {
   win.setIgnoreMouseEvents(true);
 
   win.loadFile('renderer/index.html');
-
-  if (process.platform === 'darwin') {
-    const dockIconEntry = resolvedPack?.assets?.['dock-icon'];
-    if (dockIconEntry) {
-      app.dock.setIcon(dockIconEntry.path);
-    }
-    app.dock.setMenu(buildDockMenu());
-  }
 
   if (process.argv.includes('--dev')) {
     win.webContents.openDevTools({ mode: 'detach' });
@@ -676,8 +709,6 @@ function createWindow() {
   });
 }
 
-app.setName('Peon Pet');
-
 // Renderer-requested resize: only the main process can resize a real OS
 // window, but variant selection (which picks the size) happens in the
 // renderer, so it reports the final size (already scaled/margined/halved
@@ -710,6 +741,10 @@ app.on('before-quit', () => {
   if (pollingWatcher)    { pollingWatcher.stop();             pollingWatcher = null; }
 });
 
+// Set a baseline name before app.ready so macOS registers the process name
+// before the dock activates. Overridden below with the pack's display_name.
+app.setName('Peon Pet');
+
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
@@ -727,11 +762,17 @@ if (!gotLock) {
     }
     borderEnabled = resolveBorderEnabled(cfg);
 
-    if (!registerPetProtocol()) {
+    const packInfo = registerPetProtocol();
+    if (!packInfo) {
       app.exit(1);
       return;
     }
+    app.setName(packInfo.displayName);
     createWindow();
+    if (process.platform === 'darwin') {
+      app.dock.setMenu(buildDockMenu());
+      setupDockIcon();
+    }
   });
   app.on('window-all-closed', () => app.quit());
 }
