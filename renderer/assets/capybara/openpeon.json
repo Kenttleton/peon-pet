@@ -41,6 +41,6 @@
   },
   "assets": {
     "dock-icon": { "file": "dock-icon.png" },
-    "borders": { "file": "borders.png", "margin": { "x": 55, "y": 48 } }
+    "borders": { "file": "borders.png", "margin": { "x": 50, "y": 48 } }
   }
 }
