@@ -35,6 +35,41 @@ const MAX_SUB_AGENT_WINDOWS = 5;
 const SUB_AGENT_BASE_Y_OFFSET = 170; // px from bottom of work area to main pet
 const SUB_AGENT_TTL_MS = 10 * 60 * 1000; // 10 min — destroy stale windows if SubagentStop never fired
 
+// A second, always-on-top window for the tooltip — an OS window is a hard
+// rectangular canvas, so a tooltip drawn *inside* the pet window's own
+// bounds can never render past its edge (CSS overflow doesn't apply to
+// the platform's own window clipping). Created lazily on first hover;
+// resized to fit its content exactly once the tooltip page reports its
+// natural size back (see the 'tooltip-size' handler below).
+let tooltipWin = null;
+let pendingTooltipAnchor = { x: 0, y: 0 };
+
+function ensureTooltipWindow() {
+  if (tooltipWin && !tooltipWin.isDestroyed()) return tooltipWin;
+  tooltipWin = new BrowserWindow({
+    width: 10,
+    height: 10,
+    show: false,
+    transparent: true,
+    frame: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    resizable: false,
+    focusable: false,
+    hasShadow: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'renderer', 'tooltip-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+    },
+  });
+  tooltipWin.setIgnoreMouseEvents(true);
+  tooltipWin.loadFile('renderer/tooltip.html');
+  return tooltipWin;
+}
+
+
 // --- Pet system ---
 let resolvedPack = null; // { categories, assets } — set once in registerPetProtocol
 let scale = 1; // resolved once in app.whenReady, before any window is created
@@ -462,6 +497,28 @@ ipcMain.on('drag-stop', () => {
   isDragging = false;
 });
 
+ipcMain.on('show-tooltip', (_event, { html, x, y }) => {
+  const tw = ensureTooltipWindow();
+  pendingTooltipAnchor = { x, y };
+  tw.webContents.send('tooltip-show', html);
+});
+
+ipcMain.on('hide-tooltip', () => {
+  if (tooltipWin && !tooltipWin.isDestroyed()) tooltipWin.hide();
+});
+
+// The tooltip page reports its natural content size after every update
+// (see renderer/tooltip.js) — only then do we know the right window size,
+// so showing happens here rather than in the 'show-tooltip' handler above.
+ipcMain.on('tooltip-size', (_event, { width, height }) => {
+  if (!tooltipWin || tooltipWin.isDestroyed()) return;
+  const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;
+  const x = Math.round(Math.min(pendingTooltipAnchor.x, screenW - width - 2));
+  const y = Math.round(Math.min(pendingTooltipAnchor.y, screenH - height - 2));
+  tooltipWin.setBounds({ x, y, width, height });
+  tooltipWin.showInactive();
+});
+
 // Poll cursor position to enable mouse events only when hovering the window.
 // This lets the renderer receive mousemove for tooltips while keeping click-through.
 // During drag, moves the window to follow the cursor.
@@ -580,6 +637,8 @@ function createWindow() {
       if (!subWin.isDestroyed()) subWin.destroy();
     }
     subAgentWindows.clear();
+    if (tooltipWin && !tooltipWin.isDestroyed()) tooltipWin.destroy();
+    tooltipWin = null;
   });
 
   // Start polling once window is ready

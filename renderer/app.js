@@ -128,9 +128,11 @@ function triggerFlash(r, g, b, intensity = 0.6, decay = 3.0) {
 
 // --- Session dots (glowing orbs) ---
 const MAX_DOTS = 10;
-const DOT_SIZE = 12;
-const DOT_GAP  = 6;
-const DOT_TOP_PADDING = 12; // px from the top edge, regardless of window size
+const DOT_SIZE_BASE = 12;
+const DOT_GAP_BASE  = 6;
+const DOT_TOP_PADDING_BASE = 12;
+const DOT_REFERENCE_WIDTH = 200; // window width these base constants were tuned for
+let dotScaleFactor = 1; // recomputed in applySize as currentWinW / DOT_REFERENCE_WIDTH
 
 const DOT_VERT = `
   varying vec2 vUv;
@@ -174,7 +176,7 @@ for (let i = 0; i < MAX_DOTS; i++) {
     transparent: true,
     depthTest: false,
   });
-  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(DOT_SIZE, DOT_SIZE), mat);
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(DOT_SIZE_BASE, DOT_SIZE_BASE), mat);
   mesh.position.z = 0.6;
   scene.add(mesh);
   dotMeshes.push(mesh);
@@ -182,18 +184,21 @@ for (let i = 0; i < MAX_DOTS; i++) {
 }
 
 function updateDots(sessions) {
+  const dotSize = DOT_SIZE_BASE * dotScaleFactor;
+  const dotGap = DOT_GAP_BASE * dotScaleFactor;
   const count = Math.min(sessions.length, MAX_DOTS);
-  const totalWidth = count * DOT_SIZE + Math.max(0, count - 1) * DOT_GAP;
-  const startX = -totalWidth / 2 + DOT_SIZE / 2;
-  const y = currentWinH / 2 - DOT_TOP_PADDING;
+  const totalWidth = count * dotSize + Math.max(0, count - 1) * dotGap;
+  const startX = -totalWidth / 2 + dotSize / 2;
+  const y = currentWinH / 2 - DOT_TOP_PADDING_BASE * dotScaleFactor;
 
   for (let i = 0; i < MAX_DOTS; i++) {
     const mesh = dotMeshes[i];
     const u    = mesh.material.uniforms;
+    mesh.scale.setScalar(dotScaleFactor);
     if (i < count) {
       const { hot, warm } = sessions[i];
       dotStates[i].active = hot;
-      mesh.position.x = startX + i * (DOT_SIZE + DOT_GAP);
+      mesh.position.x = startX + i * (dotSize + dotGap);
       mesh.position.y = y;
       // hot = bright green pulsing, warm = dim green static, else grey
       u.dotColor.value.set(hot ? 0x44ff44 : warm ? 0x1a4d1a : 0x333333);
@@ -335,6 +340,7 @@ function applySize(variant) {
   if (sprite && winW === currentWinW && winH === currentWinH) return;
   currentWinW = winW;
   currentWinH = winH;
+  dotScaleFactor = winW / DOT_REFERENCE_WIDTH;
 
   window.peonBridge.resizePet({ width: winW, height: winH });
 
@@ -441,19 +447,22 @@ function playAnim(animName) {
   }
 }
 
-// --- Tooltip ---
-const tooltip = document.getElementById('tooltip');
+// --- Tooltip (rendered in its own always-on-top window — see main.js's
+// ensureTooltipWindow. An OS window can't render past its own bounds, so a
+// tooltip drawn inside this window would get clipped at small --scale.) ---
 let currentSessions = [];
 
 function hitTestDots(px, py) {
   const count = Math.min(currentSessions.length, MAX_DOTS);
   if (count === 0) return -1;
-  const totalWidth = count * DOT_SIZE + Math.max(0, count - 1) * DOT_GAP;
-  const startThreeX = -totalWidth / 2 + DOT_SIZE / 2;
-  const dotCanvasY = DOT_TOP_PADDING; // winH/2 - (winH/2 - DOT_TOP_PADDING)
-  const HIT_R = DOT_SIZE;              // slightly wider than visual for easier hover
+  const dotSize = DOT_SIZE_BASE * dotScaleFactor;
+  const dotGap = DOT_GAP_BASE * dotScaleFactor;
+  const totalWidth = count * dotSize + Math.max(0, count - 1) * dotGap;
+  const startThreeX = -totalWidth / 2 + dotSize / 2;
+  const dotCanvasY = DOT_TOP_PADDING_BASE * dotScaleFactor; // winH/2 - (winH/2 - padding)
+  const HIT_R = dotSize;                                    // slightly wider than visual for easier hover
   for (let i = 0; i < count; i++) {
-    const dotCanvasX = startThreeX + i * (DOT_SIZE + DOT_GAP) + currentWinW / 2;
+    const dotCanvasX = startThreeX + i * (dotSize + dotGap) + currentWinW / 2;
     const dx = px - dotCanvasX;
     const dy = py - dotCanvasY;
     if (dx * dx + dy * dy < HIT_R * HIT_R) return i;
@@ -467,7 +476,7 @@ let dragging = false;
 canvas.addEventListener('pointerdown', (e) => {
   if (e.button !== 0) return;  // left-click only
   dragging = true;
-  tooltip.style.display = 'none';
+  window.peonBridge.hideTooltip();
   canvas.setPointerCapture(e.pointerId);
   window.peonBridge.startDrag();
 });
@@ -515,17 +524,14 @@ function handleMouseMove(e) {
       html = names.length ? names.join('<br>') : `${active}/${total} sessions`;
     }
   }
-  tooltip.innerHTML = html;
-  tooltip.style.display = 'block';
-  // Position tooltip: prefer to the right/below cursor, clamped inside window
-  const tw = tooltip.offsetWidth;
-  const th = tooltip.offsetHeight;
-  tooltip.style.left = Math.min(px + 6, currentWinW - tw - 2) + 'px';
-  tooltip.style.top  = Math.min(py + 6, currentWinH - th - 2) + 'px';
+  // e.screenX/screenY are the cursor's absolute screen position — the
+  // tooltip window is positioned by main.js, independent of this window's
+  // own bounds, so there's no window-relative math needed here at all.
+  window.peonBridge.showTooltip({ html, x: e.screenX + 6, y: e.screenY + 6 });
 }
 
 function handleMouseLeave() {
-  if (!dragging) tooltip.style.display = 'none';
+  if (!dragging) window.peonBridge.hideTooltip();
 }
 
 canvas.addEventListener('mousemove', handleMouseMove);
@@ -552,7 +558,6 @@ function initScene(config) {
       mesh.geometry.dispose();
       mesh.material.dispose();
     }
-    tooltip.style.display = 'none';
     canvas.removeEventListener('mousemove', handleMouseMove);
     canvas.removeEventListener('mouseleave', handleMouseLeave);
   }
