@@ -181,27 +181,39 @@ describe('validateManifest', () => {
     expect(validateManifest(m).some(e => e.includes('fps'))).toBe(true);
   });
 
-  test('accepts a borders margin in [0, 0.5)', () => {
+  test('accepts a borders margin with non-negative x/y (native pixels)', () => {
     const m = validManifest();
-    m.assets.borders = { file: 'borders.png', margin: 0.1 };
+    m.assets.borders = { file: 'borders.png', margin: { x: 90, y: 60 } };
     expect(validateManifest(m)).toEqual([]);
   });
 
-  test('rejects a borders margin >= 0.5', () => {
+  test('accepts a zero borders margin', () => {
     const m = validManifest();
-    m.assets.borders = { file: 'borders.png', margin: 0.5 };
+    m.assets.borders = { file: 'borders.png', margin: { x: 0, y: 0 } };
+    expect(validateManifest(m)).toEqual([]);
+  });
+
+  test('rejects a negative margin component', () => {
+    const m = validManifest();
+    m.assets.borders = { file: 'borders.png', margin: { x: -1, y: 0 } };
     expect(validateManifest(m).some(e => e.includes('margin'))).toBe(true);
   });
 
-  test('rejects a negative borders margin', () => {
+  test('rejects a margin missing the y component', () => {
     const m = validManifest();
-    m.assets.borders = { file: 'borders.png', margin: -0.1 };
+    m.assets.borders = { file: 'borders.png', margin: { x: 10 } };
+    expect(validateManifest(m).some(e => e.includes('margin'))).toBe(true);
+  });
+
+  test('rejects a bare-number margin — must be an {x, y} object', () => {
+    const m = validManifest();
+    m.assets.borders = { file: 'borders.png', margin: 10 };
     expect(validateManifest(m).some(e => e.includes('margin'))).toBe(true);
   });
 
   test('rejects margin on an asset other than borders', () => {
     const m = validManifest();
-    m.assets.bg = { file: 'bg.png', margin: 0.1 };
+    m.assets.bg = { file: 'bg.png', margin: { x: 0.1, y: 0.1 } };
     expect(validateManifest(m).some(e => e.includes('margin'))).toBe(true);
   });
 
@@ -340,6 +352,19 @@ describe('resolvePack', () => {
   test('render_density defaults to 1 when omitted', () => {
     const { categories } = resolvePack(makeActive(), activeDir, makeDefault(), defaultDir);
     expect(categories.sleeping[0].displayWidth).toBeCloseTo(100);
+  });
+
+  test('borders.margin resolves to displayMargin {x, y}, each divided by the same render_density', () => {
+    const active = makeActive({ render_density: 2 });
+    active.assets.borders.margin = { x: 20, y: 8 }; // native pixels
+    const { assets } = resolvePack(active, activeDir, makeDefault(), defaultDir);
+    expect(assets.borders.displayMargin.x).toBeCloseTo(10);
+    expect(assets.borders.displayMargin.y).toBeCloseTo(4);
+  });
+
+  test('borders.margin defaults to displayMargin {x:0, y:0} when omitted', () => {
+    const { assets } = resolvePack(makeActive(), activeDir, makeDefault(), defaultDir);
+    expect(assets.borders.displayMargin).toEqual({ x: 0, y: 0 });
   });
 });
 

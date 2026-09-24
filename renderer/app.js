@@ -295,7 +295,7 @@ const IDLE_TIMEOUT_MS = 30000;
 let isSubAgent = false;
 let anySessionActive = false;
 let scale = 1;         // user's --scale / config "scale", resolved once in main.js
-let borderMargin = 0;  // 0 unless the user enabled borders AND the pack has one
+let borderMargin = { x: 0, y: 0 }; // 0 unless the user enabled borders AND the pack has one; already density-adjusted per axis (see resolvePack's displayMargin)
 
 // Per-category "last played variant" — process-lifetime only, per CEAP's
 // variant-selection algorithm (docs/ceap-spec.md#variant-selection).
@@ -325,8 +325,8 @@ function resetIdleTimer() {
 // enabled one and the pack has one) grows the *window* around them rather
 // than shrinking the sprite to fit — see lib/pet-size.js.
 function applySize(variant) {
-  const spriteSize = window.peonBridge.computeWindowSize(variant, { margin: 0, scale, subAgent: isSubAgent });
-  const winSize = window.peonBridge.computeWindowSize(variant, { margin: borderMargin, scale, subAgent: isSubAgent });
+  const spriteSize = window.peonBridge.computeWindowSize(variant, { marginX: 0, marginY: 0, scale, subAgent: isSubAgent });
+  const winSize = window.peonBridge.computeWindowSize(variant, { marginX: borderMargin.x, marginY: borderMargin.y, scale, subAgent: isSubAgent });
   const winW = Math.round(winSize.width);
   const winH = Math.round(winSize.height);
   const spriteW = spriteSize.width;
@@ -543,7 +543,7 @@ function initScene(config) {
   // when the user opted in AND the pack has one.
   pendingBgAsset = config.assets?.bg ?? null;
   pendingBorderAsset = config.assets?.borders ?? null;
-  borderMargin = pendingBorderAsset?.margin ?? 0;
+  borderMargin = pendingBorderAsset?.displayMargin ?? { x: 0, y: 0 };
 
   // Sub-agent windows: no dots, no tooltip
   if (isSubAgent) {

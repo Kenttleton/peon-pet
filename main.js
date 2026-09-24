@@ -120,16 +120,20 @@ function resolveBorderEnabled(cfg) {
   return typeof cfg.border === 'boolean' ? cfg.border : false;
 }
 
-// A border's frame margin only matters while borders are actually enabled
-// (user opt-in) and the active pack actually has one — otherwise 0, so the
-// window never grows to make room for a frame nothing will draw.
+// A border's frame margin (already density-adjusted pixels, per axis — see
+// resolvePack's displayMargin) only matters while borders are actually
+// enabled (user opt-in) and the active pack actually has one — otherwise
+// {x:0, y:0}, so the window never grows to make room for a frame nothing
+// will draw.
 function activeBorderMargin() {
-  return (borderEnabled && resolvedPack.assets.borders?.margin) || 0;
+  return (borderEnabled && resolvedPack.assets.borders?.displayMargin) || { x: 0, y: 0 };
 }
 
 function windowSizeForVariant(variant, isSubAgentWindow) {
+  const margin = activeBorderMargin();
   const { width, height } = computeWindowSize(variant, {
-    margin: activeBorderMargin(),
+    marginX: margin.x,
+    marginY: margin.y,
     scale,
     subAgent: isSubAgentWindow,
   });

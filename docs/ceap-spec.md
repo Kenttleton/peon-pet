@@ -219,18 +219,26 @@ animated by adding the same frame-timing fields a category variant uses:
 | `fps` | required if `frames` > 1 | — | Playback speed, in frames per second. |
 | `row` / `rows` | no | `0` / `1` | Same meaning as a category variant's `row`/`rows`, for authors sharing an atlas between an animated asset and something else. |
 | `loop` | no | `true` | Animated assets default to looping, since there's no event to return from — this is ambient, not a reaction. |
-| `margin` | no, `borders` only | `0` | Fraction in `[0, 0.5)` of the frame reserved on each side for the border's own frame art. A validator MUST reject `margin` on any asset key other than `borders`. |
+| `margin` | no, `borders` only | `{x: 0, y: 0}` | `{x, y}` — the border's frame-ring thickness on each axis, in the same native-pixel space as `frames`/`rows` math (divided by `render_density` like everything else — see below). A validator MUST reject `margin` on any asset key other than `borders`, and MUST reject a `margin` that isn't an object with non-negative `x` and `y`. |
 
 `margin` exists because a `borders` asset overlaying the sprite is itself
 an enhancement, not something CEAP's bare minimum (`sleeping` + `typing`)
 assumes — see [Fallback Behavior](#fallback-behavior). A player that shows
 a border MUST NOT shrink the sprite/`bg` to make room for it; instead the
-on-screen *window* grows by `margin` on each side around the sprite's own
-declared size, and the border art (sized to the grown window) is expected
-to have a transparent center matching the sprite's footprint and opaque
-frame art only in the reserved margin. A pack with no `margin` (the
-default) that ships a border is declaring a full-bleed overlay the same
-size as the sprite itself, not a picture frame.
+on-screen *window* grows by `margin.x`/`margin.y` on each side around the
+sprite's own declared size, and the border art (sized to the grown
+window) is expected to have a transparent center matching the sprite's
+footprint and opaque frame art only in the reserved margin. `x` and `y`
+are independent because a frame's ring is rarely the same thickness on
+both axes. A pack with no `margin` (the default) that ships a border is
+declaring a full-bleed overlay the same size as the sprite itself, not a
+picture frame.
+
+The simplest way to measure `margin` for a symmetric frame: count the
+non-transparent pixels along the border image's own center row (for `x`)
+and center column (for `y`), and halve each count — that's the ring
+thickness on one side, in the border image's own pixel space. Divide by
+`render_density` the same as any other file, per axis.
 
 Whether a border is shown at all — given the pack provides one — is a
 player policy CEAP does not mandate: a player MAY default to not

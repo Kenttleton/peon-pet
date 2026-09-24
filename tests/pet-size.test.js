@@ -31,24 +31,24 @@ describe('computeWindowSize', () => {
     expect(width).toBeCloseTo(200); // 200 * 0.5 * 2
   });
 
-  test('margin grows the window without shrinking the sprite', () => {
-    // margin=0.1 -> growth factor 0.8 -> window = display / 0.8
-    const { width, height } = computeWindowSize({ displayWidth: 160, displayHeight: 160 }, { margin: 0.1 });
+  test('marginX/marginY grow each axis independently, without shrinking the sprite', () => {
+    const { width, height } = computeWindowSize({ displayWidth: 160, displayHeight: 100 }, { marginX: 20, marginY: 5 });
+    expect(width).toBeCloseTo(200);  // 160 + 2*20
+    expect(height).toBeCloseTo(110); // 100 + 2*5
+  });
+
+  test('zero margin (no border, or border disabled) leaves size unchanged', () => {
+    const { width, height } = computeWindowSize({ displayWidth: 200, displayHeight: 200 }, { marginX: 0, marginY: 0 });
     expect(width).toBeCloseTo(200);
     expect(height).toBeCloseTo(200);
   });
 
-  test('zero margin (no border, or border disabled) leaves size unchanged', () => {
-    const { width } = computeWindowSize({ displayWidth: 200, displayHeight: 200 }, { margin: 0 });
-    expect(width).toBeCloseTo(200);
-  });
-
-  test('margin, scale, and subAgent all compose together', () => {
+  test('margins scale along with scale and subAgent, not just the sprite', () => {
     const { width, height } = computeWindowSize(
       { displayWidth: 160, displayHeight: 160 },
-      { margin: 0.1, scale: 2, subAgent: true }
+      { marginX: 20, marginY: 20, scale: 2, subAgent: true }
     );
-    // (160 / 0.8) * 0.5 * 2 = 200
+    // (160 + 2*20) * 0.5 * 2 = 200
     expect(width).toBeCloseTo(200);
     expect(height).toBeCloseTo(200);
   });

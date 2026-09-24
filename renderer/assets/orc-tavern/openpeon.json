@@ -14,7 +14,7 @@
   },
   "assets": {
     "dock-icon": { "file": "dock-icon.png" },
-    "borders":   { "file": "borders.png", "margin": 0.1 },
+    "borders":   { "file": "borders.png", "margin": { "x": 27, "y": 22 } },
     "bg":        { "file": "bg.png" }
   }
 }
