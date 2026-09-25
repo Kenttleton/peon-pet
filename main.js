@@ -231,12 +231,13 @@ function reloadPack(cfg) {
     return null;
   }
 
-  // Rebuild token maps so new pack assets get fresh URLs; old tokens remain
-  // valid in the protocol handler (renderer texture cache deduplicates by URL,
-  // so old pack textures just sit unused in GPU memory — acceptable).
+  // Rebuild token maps so new pack assets get fresh URLs. Do NOT reset
+  // nextAssetToken: the renderer caches textures by URL, so reusing token
+  // numbers (e.g. peon-asset://0) after a pack switch returns stale textures
+  // from the old pack. Old tokens are left in the path map so in-flight
+  // requests from the previous pack still resolve; they'll go unused.
   assetPathsByToken.clear();
   assetTokensByPath.clear();
-  nextAssetToken = 0;
 
   resolvedPack = resolvePack(activeManifest, activeDir, defaultManifest, defaultBundledDir);
   return { displayName: activeManifest.display_name };
@@ -630,6 +631,7 @@ async function applyConfigHotReload() {
     animations: toIpcAnimations(resolvedPack.categories),
     assets: toIpcAssets(resolvedPack.assets, borderEnabled),
     dotColors: resolvedPack.dotColors,
+    cornerRadius: cfg.cornerRadius ?? 0,
   };
   if (win && !win.isDestroyed()) {
     win.webContents.send('peon-config', ipcConfig);
@@ -777,6 +779,7 @@ function createWindow() {
       animations: toIpcAnimations(resolvedPack.categories),
       assets: toIpcAssets(resolvedPack.assets, borderEnabled),
       dotColors: resolvedPack.dotColors,
+      cornerRadius: cfg.cornerRadius ?? 0,
     });
     startPolling();
     startMouseTrackingForWindow(win);

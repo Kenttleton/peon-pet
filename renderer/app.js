@@ -584,6 +584,9 @@ function initScene(config) {
     off:  packColors.off  ?? DOT_COLOR_DEFAULTS.off,
   };
 
+  // Apply corner radius — CSS border-radius on the transparent window
+  document.body.style.borderRadius = `${config.cornerRadius ?? 0}px`;
+
   // Clear per-pack variant history so the new pack starts fresh
   for (const k of Object.keys(lastPlayedIndex)) delete lastPlayedIndex[k];
 
