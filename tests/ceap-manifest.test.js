@@ -280,6 +280,35 @@ describe('validateManifest', () => {
   test('rejects a non-numeric render_density', () => {
     expect(validateManifest(validManifest({ render_density: '2' })).some(e => e.includes('render_density'))).toBe(true);
   });
+
+  test('accepts dot_colors with valid css color strings', () => {
+    const m = validManifest({ dot_colors: { hot: 'rgba(68,255,68,1)', warm: 'rgba(68,255,68,0.25)', off: '#333333' } });
+    expect(validateManifest(m)).toEqual([]);
+  });
+
+  test('accepts dot_colors with a subset of keys', () => {
+    const m = validManifest({ dot_colors: { hot: '#ff69b4' } });
+    expect(validateManifest(m)).toEqual([]);
+  });
+
+  test('rejects dot_colors that is not an object', () => {
+    expect(validateManifest(validManifest({ dot_colors: 'green' })).some(e => e.includes('dot_colors'))).toBe(true);
+  });
+
+  test('rejects unknown dot_colors keys', () => {
+    const m = validManifest({ dot_colors: { active: '#ff0000' } });
+    expect(validateManifest(m).some(e => e.includes('dot_colors.active'))).toBe(true);
+  });
+
+  test('rejects dot_colors values that are not strings', () => {
+    const m = validManifest({ dot_colors: { hot: 0xff6600 } });
+    expect(validateManifest(m).some(e => e.includes('dot_colors.hot'))).toBe(true);
+  });
+
+  test('rejects empty string dot_colors values', () => {
+    const m = validManifest({ dot_colors: { hot: '' } });
+    expect(validateManifest(m).some(e => e.includes('dot_colors.hot'))).toBe(true);
+  });
 });
 
 describe('resolvePack', () => {
@@ -482,6 +511,17 @@ describe('resolvePack', () => {
   test('borders.margin defaults to displayMargin {x:0, y:0} when omitted', () => {
     const { assets } = resolvePack(makeActive(), activeDir, makeDefault(), defaultDir);
     expect(assets.borders.displayMargin).toEqual({ x: 0, y: 0 });
+  });
+
+  test('dotColors is forwarded from active manifest dot_colors', () => {
+    const active = makeActive({ dot_colors: { hot: '#ff0000', warm: 'rgba(255,0,0,0.3)' } });
+    const { dotColors } = resolvePack(active, activeDir, makeDefault(), defaultDir);
+    expect(dotColors).toEqual({ hot: '#ff0000', warm: 'rgba(255,0,0,0.3)' });
+  });
+
+  test('dotColors is undefined when manifest omits dot_colors', () => {
+    const { dotColors } = resolvePack(makeActive(), activeDir, makeDefault(), defaultDir);
+    expect(dotColors).toBeUndefined();
   });
 });
 

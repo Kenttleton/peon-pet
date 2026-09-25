@@ -152,6 +152,32 @@ The default is `0` — square corners. A player MUST suppress the operating syst
 
 A user MAY override the pack's value via a `cornerRadius` config field (a non-negative display-pixel number — already in display space, independent of any pack's density). Set to `0` to force square corners regardless of what the pack declares. When `cornerRadius` is absent, the pack's `corner_radius` (density-adjusted) applies. This mirrors the `border` pattern: the manifest declares the artist's intent; the user can change or suppress it.
 
+### `dot_colors`
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `dot_colors` | object | see below | Per-state colors for the session dots displayed beneath the pet. Each value is any valid CSS color string. |
+
+Session dots have three states. A pack may override any subset of them:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `hot` | `"rgba(68, 255, 68, 1.0)"` | Active session — dot pulses at full opacity. |
+| `warm` | `"rgba(68, 255, 68, 0.25)"` | Idle session (open but not typing) — dot is static at reduced opacity. |
+| `off` | `"rgba(51, 51, 51, 1.0)"` | Dot slot is visible but session is inactive / cold. |
+
+```json
+"dot_colors": {
+  "hot":  "rgba(255, 105, 180, 1.0)",
+  "warm": "rgba(255, 105, 180, 0.25)",
+  "off":  "rgba(40, 40, 40, 1.0)"
+}
+```
+
+Values accept any CSS color format: hex (`#ff69b4`), `rgb(...)`, `rgba(...)`, or named colors (`hotpink`). The alpha component of `rgba(...)` is applied on top of the dot's existing soft-edge geometry transparency — a `warm` dot that is simply a lower-alpha version of `hot` is the recommended approach for color consistency across states. A fully transparent value (`rgba(..., 0)`) hides dots for that state. All three keys are optional; missing keys fall back to their defaults.
+
+No fallback to the default pack: `dot_colors` is read from the active pack's manifest only.
+
 ### `categories`
 
 An object keyed by category name (see [Event Categories](#event-categories)

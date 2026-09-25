@@ -336,6 +336,7 @@ function createSubAgentWindow(sessionId) {
       scale,
       animations: toIpcAnimations(resolvedPack.categories),
       assets: toIpcAssets(resolvedPack.assets, borderEnabled),
+      dotColors: resolvedPack.dotColors,
     });
     subWin.webContents.send('peon-event', { anim: 'waking', event: 'SessionStart' });
     startMouseTrackingForWindow(subWin);
@@ -628,6 +629,7 @@ async function applyConfigHotReload() {
     scale,
     animations: toIpcAnimations(resolvedPack.categories),
     assets: toIpcAssets(resolvedPack.assets, borderEnabled),
+    dotColors: resolvedPack.dotColors,
   };
   if (win && !win.isDestroyed()) {
     win.webContents.send('peon-config', ipcConfig);
@@ -774,6 +776,7 @@ function createWindow() {
       scale,
       animations: toIpcAnimations(resolvedPack.categories),
       assets: toIpcAssets(resolvedPack.assets, borderEnabled),
+      dotColors: resolvedPack.dotColors,
     });
     startPolling();
     startMouseTrackingForWindow(win);

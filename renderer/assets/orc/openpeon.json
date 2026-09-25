@@ -5,6 +5,11 @@
   "version": "1.0.0",
   "license": "CC-BY-NC-4.0",
   "render_density": 3.4,
+  "dot_colors": {
+    "hot":  "rgba(124, 252, 0, 1.0)",
+    "warm": "rgba(124, 252, 0, 0.25)",
+    "off":  "rgba(40, 40, 40, 1.0)"
+  },
   "categories": {
     "sleeping": [
       {

@@ -126,6 +126,33 @@ function triggerFlash(r, g, b, intensity = 0.6, decay = 3.0) {
   flashDecay = decay;
 }
 
+// --- CSS color parser (uses canvas to normalize any valid CSS color to {r,g,b,a}) ---
+const _colorParseCtx = document.createElement('canvas').getContext('2d');
+function parseCssColor(css) {
+  _colorParseCtx.clearRect(0, 0, 1, 1);
+  _colorParseCtx.fillStyle = '#000000';
+  _colorParseCtx.fillStyle = css;
+  const normalized = _colorParseCtx.fillStyle;
+  // canvas normalizes to '#rrggbb' or 'rgba(r, g, b, a)'
+  const hexMatch = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(normalized);
+  if (hexMatch) {
+    return { r: parseInt(hexMatch[1], 16) / 255, g: parseInt(hexMatch[2], 16) / 255, b: parseInt(hexMatch[3], 16) / 255, a: 1 };
+  }
+  const rgbaMatch = /^rgba\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)$/.exec(normalized);
+  if (rgbaMatch) {
+    return { r: +rgbaMatch[1] / 255, g: +rgbaMatch[2] / 255, b: +rgbaMatch[3] / 255, a: +rgbaMatch[4] };
+  }
+  return { r: 0.2, g: 0.2, b: 0.2, a: 1 }; // fallback grey on parse failure
+}
+
+// Default dot colors — overridden per-pack via dot_colors in openpeon.json
+const DOT_COLOR_DEFAULTS = Object.freeze({
+  hot:  'rgba(68, 255, 68, 1.0)',
+  warm: 'rgba(68, 255, 68, 0.25)',
+  off:  'rgba(51, 51, 51, 1.0)',
+});
+let dotColors = { ...DOT_COLOR_DEFAULTS };
+
 // --- Session dots (glowing orbs) ---
 const MAX_DOTS = 10;
 const DOT_SIZE_BASE = 12;
@@ -143,6 +170,7 @@ const DOT_VERT = `
 `;
 const DOT_FRAG = `
   uniform vec3  dotColor;
+  uniform float dotAlpha; // artist-controlled opacity from dot_colors rgba
   uniform float pulse;   // 0..1 animated for active, 0 for idle
   uniform float visible; // 0 or 1
   varying vec2 vUv;
@@ -154,7 +182,7 @@ const DOT_FRAG = `
     float core = 1.0 - smoothstep(0.20, 0.32, dist);
     // Outer glow ring — only for active
     float glow = (1.0 - smoothstep(0.32, 0.50, dist)) * pulse * 0.6;
-    float alpha = core + glow;
+    float alpha = (core + glow) * dotAlpha;
     if (alpha < 0.01) discard;
     vec3 col = dotColor + dotColor * pulse * 0.5;
     gl_FragColor = vec4(col, alpha);
@@ -169,9 +197,10 @@ for (let i = 0; i < MAX_DOTS; i++) {
     vertexShader:   DOT_VERT,
     fragmentShader: DOT_FRAG,
     uniforms: {
-      dotColor: { value: new THREE.Color(0x666666) },
-      pulse:    { value: 0.0 },
-      visible:  { value: 0.0 },
+      dotColor:  { value: new THREE.Color(0x666666) },
+      dotAlpha:  { value: 1.0 },
+      pulse:     { value: 0.0 },
+      visible:   { value: 0.0 },
     },
     transparent: true,
     depthTest: false,
@@ -200,8 +229,9 @@ function updateDots(sessions) {
       dotStates[i].active = hot;
       mesh.position.x = startX + i * (dotSize + dotGap);
       mesh.position.y = y;
-      // hot = bright green pulsing, warm = dim green static, else grey
-      u.dotColor.value.set(hot ? 0x44ff44 : warm ? 0x1a4d1a : 0x333333);
+      const { r, g, b, a } = parseCssColor(hot ? dotColors.hot : warm ? dotColors.warm : dotColors.off);
+      u.dotColor.value.setRGB(r, g, b);
+      u.dotAlpha.value = a;
       u.visible.value = 1.0;
     } else {
       dotStates[i].active = false;
@@ -508,9 +538,9 @@ function handleMouseMove(e) {
   let html;
   if (idx >= 0) {
     const s = currentSessions[idx];
-    const status = s.hot ? '<span style="color:#44ff44">active</span>'
-                         : s.warm ? '<span style="color:#1aaa1a">idle</span>'
-                         : '<span style="color:#555">cold</span>';
+    const status = s.hot ? `<span style="color:${dotColors.hot}">active</span>`
+                         : s.warm ? `<span style="color:${dotColors.warm}">idle</span>`
+                         : `<span style="color:${dotColors.off}">cold</span>`;
     const label = s.cwd ? s.cwd.split('/').filter(Boolean).pop() : ('…' + s.id.slice(-8));
     html = `${label} &bull; ${status}`;
   } else {
@@ -545,6 +575,14 @@ function initScene(config) {
   isSubAgent = !!config.subAgent;
   scale = config.scale ?? 1;
   ANIM_CONFIG = config.animations || {};
+
+  // Merge pack dot_colors over defaults; missing keys fall back to defaults
+  const packColors = config.dotColors || {};
+  dotColors = {
+    hot:  packColors.hot  ?? DOT_COLOR_DEFAULTS.hot,
+    warm: packColors.warm ?? DOT_COLOR_DEFAULTS.warm,
+    off:  packColors.off  ?? DOT_COLOR_DEFAULTS.off,
+  };
 
   // Clear per-pack variant history so the new pack starts fresh
   for (const k of Object.keys(lastPlayedIndex)) delete lastPlayedIndex[k];

@@ -4,6 +4,11 @@
   "display_name": "Laptop Guy",
   "version": "1.0.0",
   "render_density": 1.1,
+  "dot_colors": {
+    "hot":  "rgba(80, 180, 255, 1.0)",
+    "warm": "rgba(80, 180, 255, 0.25)",
+    "off":  "rgba(40, 40, 40, 1.0)"
+  },
   "categories": {
     "sleeping": [{ "file": "sprite-atlas.png", "row": 0, "rows": 4, "frames": 6, "fps": 3, "loop": true }],
     "waking":   [{ "file": "sprite-atlas.png", "row": 1, "rows": 4, "frames": 6, "fps": 8, "loop": false, "loops": 1 }],

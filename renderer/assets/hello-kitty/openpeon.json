@@ -4,6 +4,11 @@
   "display_name": "Hello Kitty",
   "version": "1.0.0",
   "render_density": 1.7,
+  "dot_colors": {
+    "hot":  "rgba(255, 105, 180, 1.0)",
+    "warm": "rgba(255, 105, 180, 0.25)",
+    "off":  "rgba(40, 40, 40, 1.0)"
+  },
   "categories": {
     "sleeping": [
       {

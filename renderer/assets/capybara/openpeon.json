@@ -4,6 +4,11 @@
   "display_name": "Capybara",
   "version": "1.0.0",
   "render_density": 1.7,
+  "dot_colors": {
+    "hot":  "rgba(210, 160, 60, 1.0)",
+    "warm": "rgba(210, 160, 60, 0.25)",
+    "off":  "rgba(40, 40, 40, 1.0)"
+  },
   "categories": {
     "sleeping": [
       {
