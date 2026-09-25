@@ -184,6 +184,12 @@ function loadPetConfig() {
   } catch { return {}; }
 }
 
+function writeConfig(patch) {
+  const configPath = path.join(app.getPath('userData'), 'peon-pet-config.json');
+  const current = loadPetConfig();
+  fs.writeFileSync(configPath, JSON.stringify({ ...current, ...patch }, null, 2) + '\n', 'utf8');
+}
+
 function listBundledPetNames(assetsDir) {
   return fs.readdirSync(assetsDir, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
@@ -518,6 +524,10 @@ ipcMain.on('drag-start', () => {
 
 ipcMain.on('drag-stop', () => {
   isDragging = false;
+  if (win && !win.isDestroyed()) {
+    const [x, y] = win.getPosition();
+    writeConfig({ windowX: x, windowY: y });
+  }
 });
 
 ipcMain.on('show-tooltip', (_event, { html, x, y }) => {
@@ -575,6 +585,17 @@ function startMouseTrackingForWindow(targetWin) {
   }, 50);
 }
 
+function snapToCorner(corner) {
+  if (!win || win.isDestroyed()) return;
+  const [w, h] = win.getSize();
+  const display = screen.getDisplayNearestPoint({ x: win.getPosition()[0], y: win.getPosition()[1] });
+  const { x, y } = cornerPosition(corner, display.workArea.width, display.workArea.height, w, h);
+  const nx = display.workArea.x + x;
+  const ny = display.workArea.y + y;
+  win.setPosition(nx, ny);
+  writeConfig({ windowX: nx, windowY: ny });
+}
+
 function buildDockMenu() {
   return Menu.buildFromTemplate([
     {
@@ -595,6 +616,16 @@ function buildDockMenu() {
         petVisible = !petVisible;
         app.dock.setMenu(buildDockMenu());
       },
+    },
+    { type: 'separator' },
+    {
+      label: 'Snap to Corner',
+      submenu: [
+        { label: 'Bottom Left',  click() { snapToCorner('bottom-left');  } },
+        { label: 'Bottom Right', click() { snapToCorner('bottom-right'); } },
+        { label: 'Top Left',     click() { snapToCorner('top-left');     } },
+        { label: 'Top Right',    click() { snapToCorner('top-right');    } },
+      ],
     },
     { type: 'separator' },
     {
@@ -723,11 +754,17 @@ async function setupDockIcon() {
 }
 
 function createWindow() {
-  const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;
   const cfg = loadPetConfig();
   const sleepingVariant = resolvedPack.categories.sleeping[0];
   const { width: petW, height: petH } = windowSizeForVariant(sleepingVariant, false);
-  const { x, y } = cornerPosition(cfg.corner, screenW, screenH, petW, petH);
+  let x, y;
+  if (cfg.windowX !== undefined && cfg.windowY !== undefined) {
+    x = cfg.windowX;
+    y = cfg.windowY;
+  } else {
+    const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;
+    ({ x, y } = cornerPosition('bottom-left', screenW, screenH, petW, petH));
+  }
 
   win = new BrowserWindow({
     width: petW,
@@ -811,12 +848,7 @@ ipcMain.on('resize-pet', (event, { width, height }) => {
   const senderWin = BrowserWindow.fromWebContents(event.sender);
   if (!senderWin || senderWin.isDestroyed()) return;
   senderWin.setSize(w, h);
-  if (senderWin === win) {
-    const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;
-    const cfg = loadPetConfig();
-    const { x, y } = cornerPosition(cfg.corner, screenW, screenH, w, h);
-    senderWin.setPosition(x, y);
-  } else {
+  if (senderWin !== win) {
     repositionSubAgentWindows();
   }
 });
