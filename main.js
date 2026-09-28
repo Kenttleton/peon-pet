@@ -12,6 +12,9 @@ const os = require('os');
 const { loadManifestFromDir, resolvePack } = require('./lib/ceap-manifest');
 const { migrateLegacyCharacters } = require('./lib/ceap-migration');
 const { computeWindowSize } = require('./lib/pet-size');
+const { ConfigManager } = require('./lib/config-manager');
+
+const cfgMgr = new ConfigManager();
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -174,20 +177,6 @@ function windowSizeForVariant(variant, isSubAgentWindow) {
     subAgent: isSubAgentWindow,
   });
   return { width: Math.round(width), height: Math.round(height) };
-}
-
-function loadPetConfig() {
-  try {
-    return JSON.parse(fs.readFileSync(
-      path.join(app.getPath('userData'), 'peon-pet-config.json'), 'utf8'
-    ));
-  } catch { return {}; }
-}
-
-function writeConfig(patch) {
-  const configPath = path.join(app.getPath('userData'), 'peon-pet-config.json');
-  const current = loadPetConfig();
-  fs.writeFileSync(configPath, JSON.stringify({ ...current, ...patch }, null, 2) + '\n', 'utf8');
 }
 
 function listBundledPetNames(assetsDir) {
@@ -467,8 +456,7 @@ let heartbeatInterval = null;
 let remoteInterval = null;
 
 function startPolling() {
-  const cfg = loadPetConfig();
-  const remoteUrl = cfg.remoteUrl || 'http://127.0.0.1:19998';
+  const remoteUrl = cfgMgr.getAppConfig().remoteUrl;
 
   pollingWatcher = new JsonlWatcher();
 
@@ -526,7 +514,7 @@ ipcMain.on('drag-stop', () => {
   isDragging = false;
   if (win && !win.isDestroyed()) {
     const [x, y] = win.getPosition();
-    writeConfig({ windowX: x, windowY: y });
+    cfgMgr.saveWindowState({ windowX: x, windowY: y });
   }
 });
 
@@ -593,7 +581,7 @@ function snapToCorner(corner) {
   const nx = display.workArea.x + x;
   const ny = display.workArea.y + y;
   win.setPosition(nx, ny);
-  writeConfig({ windowX: nx, windowY: ny });
+  cfgMgr.saveWindowState({ windowX: nx, windowY: ny });
 }
 
 function buildDockMenu() {
@@ -642,7 +630,7 @@ const { WIN_MARGIN, cornerPosition } = require('./lib/window-position');
 // Applies a config update in-place: re-resolves pack/scale/border and pushes
 // new peon-config to all live windows. No restart needed for any setting.
 async function applyConfigHotReload() {
-  const cfg = loadPetConfig();
+  const cfg = cfgMgr.getRaw();
   const newScale = resolveScale(cfg);
   if (newScale !== null) scale = newScale;
   borderEnabled = resolveBorderEnabled(cfg);
@@ -754,13 +742,13 @@ async function setupDockIcon() {
 }
 
 function createWindow() {
-  const cfg = loadPetConfig();
+  const ws = cfgMgr.getWindowState();
   const sleepingVariant = resolvedPack.categories.sleeping[0];
   const { width: petW, height: petH } = windowSizeForVariant(sleepingVariant, false);
   let x, y;
-  if (cfg.windowX !== undefined && cfg.windowY !== undefined) {
-    x = cfg.windowX;
-    y = cfg.windowY;
+  if (ws.windowX !== undefined && ws.windowY !== undefined) {
+    x = ws.windowX;
+    y = ws.windowY;
   } else {
     const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;
     ({ x, y } = cornerPosition('bottom-left', screenW, screenH, petW, petH));
@@ -816,7 +804,7 @@ function createWindow() {
       animations: toIpcAnimations(resolvedPack.categories),
       assets: toIpcAssets(resolvedPack.assets, borderEnabled),
       dotColors: resolvedPack.dotColors,
-      cornerRadius: cfg.cornerRadius ?? 0,
+      cornerRadius: cfgMgr.getAppConfig().cornerRadius,
     });
     startPolling();
     startMouseTrackingForWindow(win);
@@ -878,15 +866,15 @@ if (!gotLock) {
     const petsDir = path.join(os.homedir(), '.openpeon', 'pets');
     migrateLegacyCharacters(legacyCharactersDir, petsDir);
 
-    const cfg = loadPetConfig();
-    scale = resolveScale(cfg);
+    const raw = cfgMgr.getRaw();
+    scale = resolveScale(raw);
     if (scale === null) {
       app.exit(1);
       return;
     }
-    borderEnabled = resolveBorderEnabled(cfg);
+    borderEnabled = resolveBorderEnabled(raw);
 
-    const packInfo = registerPetProtocol(cfg);
+    const packInfo = registerPetProtocol(raw);
     if (!packInfo) {
       app.exit(1);
       return;
