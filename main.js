@@ -13,6 +13,7 @@ const { loadManifestFromDir, resolvePack } = require('./lib/ceap-manifest');
 const { migrateLegacyCharacters } = require('./lib/ceap-migration');
 const { computeWindowSize } = require('./lib/pet-size');
 const { ConfigManager } = require('./lib/config-manager');
+const { WindowManager, createMainWindowState, createTooltipWindowState, createSubAgentWindowState } = require('./lib/window-manager');
 
 const cfgMgr = new ConfigManager();
 
@@ -47,8 +48,16 @@ const SUB_AGENT_TTL_MS = 10 * 60 * 1000; // 10 min — destroy stale windows if 
 let tooltipWin = null;
 let pendingTooltipAnchor = { x: 0, y: 0 };
 
+const wm = new WindowManager();
+wm.on('drag-ended', (key, { x, y }) => {
+  if (key === 'main') cfgMgr.saveWindowState({ windowX: x, windowY: y });
+});
+
 function ensureTooltipWindow() {
-  if (tooltipWin && !tooltipWin.isDestroyed()) return tooltipWin;
+  if (tooltipWin && !tooltipWin.isDestroyed()) {
+    if (!wm.getState('tooltip')) wm.register('tooltip', tooltipWin, createTooltipWindowState('main'));
+    return tooltipWin;
+  }
   tooltipWin = new BrowserWindow({
     width: 10,
     height: 10,
@@ -70,6 +79,7 @@ function ensureTooltipWindow() {
   });
   tooltipWin.setIgnoreMouseEvents(true);
   tooltipWin.loadFile('renderer/tooltip.html');
+  wm.register('tooltip', tooltipWin, createTooltipWindowState('main'));
   return tooltipWin;
 }
 
@@ -335,20 +345,20 @@ function createSubAgentWindow(sessionId) {
       dotColors: resolvedPack.dotColors,
     });
     subWin.webContents.send('peon-event', { anim: 'waking', event: 'SessionStart' });
-    startMouseTrackingForWindow(subWin);
   });
 
   // Don't quit app when sub-agent window closes
   subWin.on('closed', () => {
     subAgentWindows.delete(sessionId);
     subAgentCreatedAt.delete(sessionId);
+    wm.unregister(sessionId);
     repositionSubAgentWindows();
   });
 
-  if (!petVisible) subWin.hide();
-
   subAgentWindows.set(sessionId, subWin);
   subAgentCreatedAt.set(sessionId, Date.now());
+  wm.register(sessionId, subWin, createSubAgentWindowState('main', 'subagent-pet', 20, 0, subW, subH));
+  if (!petVisible) wm.updateState(sessionId, { visible: false });
   repositionSubAgentWindows();
 }
 
@@ -359,6 +369,7 @@ function destroySubAgentWindow(sessionId) {
   }
   subAgentWindows.delete(sessionId);
   subAgentCreatedAt.delete(sessionId);
+  wm.unregister(sessionId);
   repositionSubAgentWindows();
 }
 
@@ -473,10 +484,13 @@ function startPolling() {
   // Also runs the TTL sweep for sub-agent windows whose SubagentStop never fired.
   heartbeatInterval = setInterval(() => {
     const now = Date.now();
-    const expired = [...subAgentCreatedAt.entries()]
-      .filter(([sid, createdAt]) => now - createdAt > SUB_AGENT_TTL_MS && !dummySessionIds.has(sid))
-      .map(([sid]) => sid);
-    for (const sid of expired) destroySubAgentWindow(sid);
+    const removed = wm.gcGroup('subagent-pet', { idleCutoff: now - SUB_AGENT_TTL_MS });
+    for (const key of removed) {
+      const sw = subAgentWindows.get(key);
+      if (sw && !sw.isDestroyed()) sw.destroy();
+      subAgentWindows.delete(key);
+      subAgentCreatedAt.delete(key);
+    }
 
     if (tracker.entries().length === 0) return;
     for (const sessionId of pollingWatcher.getActiveSessionIds()) {
@@ -504,18 +518,13 @@ ipcMain.on('drag-start', () => {
   const [wx, wy] = win.getPosition();
   dragOffsetX = cx - wx;
   dragOffsetY = cy - wy;
-  if (ignoringMouse) {
-    win.setIgnoreMouseEvents(false);
-    ignoringMouse = false;
-  }
+  wm.emit('drag-start', 'main');
+  ignoringMouse = wm.getState('main')?.ignoreMouseEvents ?? false;
 });
 
 ipcMain.on('drag-stop', () => {
   isDragging = false;
-  if (win && !win.isDestroyed()) {
-    const [x, y] = win.getPosition();
-    cfgMgr.saveWindowState({ windowX: x, windowY: y });
-  }
+  wm.emit('drag-stop', 'main');
 });
 
 ipcMain.on('show-tooltip', (_event, { html, x, y }) => {
@@ -525,7 +534,7 @@ ipcMain.on('show-tooltip', (_event, { html, x, y }) => {
 });
 
 ipcMain.on('hide-tooltip', () => {
-  if (tooltipWin && !tooltipWin.isDestroyed()) tooltipWin.hide();
+  wm.updateState('tooltip', { visible: false });
 });
 
 // The tooltip page reports its natural content size after every update
@@ -536,42 +545,8 @@ ipcMain.on('tooltip-size', (_event, { width, height }) => {
   const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;
   const x = Math.round(Math.min(pendingTooltipAnchor.x, screenW - width - 2));
   const y = Math.round(Math.min(pendingTooltipAnchor.y, screenH - height - 2));
-  tooltipWin.setBounds({ x, y, width, height });
-  tooltipWin.showInactive();
+  wm.updateState('tooltip', { x, y, width, height, visible: true });
 });
-
-// Poll cursor position to enable mouse events only when hovering the window.
-// This lets the renderer receive mousemove for tooltips while keeping click-through.
-// During drag, moves the window to follow the cursor.
-function startMouseTrackingForWindow(targetWin) {
-  const intervalId = setInterval(() => {
-    if (!targetWin || targetWin.isDestroyed()) {
-      clearInterval(intervalId);
-      return;
-    }
-    const { x: cx, y: cy } = screen.getCursorScreenPoint();
-
-    if (targetWin === win && isDragging) {
-      const nx = cx - dragOffsetX;
-      const ny = cy - dragOffsetY;
-      const [wx, wy] = targetWin.getPosition();
-      if (nx !== wx || ny !== wy) targetWin.setPosition(nx, ny);
-      return;
-    }
-
-    const [wx, wy] = targetWin.getPosition();
-    const [ww, wh] = targetWin.getSize();
-    const inside = cx >= wx && cx <= wx + ww && cy >= wy && cy <= wy + wh;
-    if (targetWin === win) {
-      if (inside !== !ignoringMouse) {
-        targetWin.setIgnoreMouseEvents(!inside);
-        ignoringMouse = !inside;
-      }
-    } else {
-      targetWin.setIgnoreMouseEvents(!inside);
-    }
-  }, 50);
-}
 
 function snapToCorner(corner) {
   if (!win || win.isDestroyed()) return;
@@ -591,15 +566,9 @@ function buildDockMenu() {
       click() {
         if (!win || win.isDestroyed()) return;
         if (petVisible) {
-          win.hide();
-          for (const [, subWin] of subAgentWindows) {
-            if (!subWin.isDestroyed()) subWin.hide();
-          }
+          wm.emit('hide-all');
         } else {
-          win.show();
-          for (const [, subWin] of subAgentWindows) {
-            if (!subWin.isDestroyed()) subWin.show();
-          }
+          wm.emit('show-all');
         }
         petVisible = !petVisible;
         app.dock.setMenu(buildDockMenu());
@@ -779,6 +748,8 @@ function createWindow() {
 
   win.loadFile('renderer/index.html');
 
+  wm.register('main', win, createMainWindowState(x, y, petW, petH));
+
   if (process.argv.includes('--dev')) {
     win.webContents.openDevTools({ mode: 'detach' });
   }
@@ -788,6 +759,8 @@ function createWindow() {
 
   // Clean up sub-agent windows when main window closes
   win.on('closed', () => {
+    wm.unregister('main');
+    wm.unregister('tooltip');
     for (const subWin of subAgentWindows.values()) {
       if (!subWin.isDestroyed()) subWin.destroy();
     }
@@ -807,7 +780,6 @@ function createWindow() {
       cornerRadius: cfgMgr.getAppConfig().cornerRadius,
     });
     startPolling();
-    startMouseTrackingForWindow(win);
 
     // Dev-only: spawn dummy sub-agents for visual testing
     if (process.argv.includes('--spawn-test')) {
@@ -836,7 +808,12 @@ ipcMain.on('resize-pet', (event, { width, height }) => {
   const senderWin = BrowserWindow.fromWebContents(event.sender);
   if (!senderWin || senderWin.isDestroyed()) return;
   senderWin.setSize(w, h);
-  if (senderWin !== win) {
+  if (senderWin === win) {
+    wm.updateState('main', { width: w, height: h });
+  } else {
+    for (const [id, sw] of subAgentWindows) {
+      if (sw === senderWin) { wm.updateState(id, { width: w, height: h }); break; }
+    }
     repositionSubAgentWindows();
   }
 });
