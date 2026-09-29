@@ -160,7 +160,8 @@ describe('updateState', () => {
   test('same-state visibility is idempotent — no Electron call', () => {
     const wm = new WindowManager({ screen: makeScreen() });
     const w = makeWin();
-    wm.register('main', w, createMainWindowState(0, 0, 100, 100)); // visible: true
+    wm.register('main', w, createMainWindowState(0, 0, 100, 100)); // visible: true; register() reconciles once
+    w._showCount = 0; w._hideCount = 0; // isolate the assertion to updateState's own behavior
     wm.updateState('main', { visible: true });
     expect(w._showCount).toBe(0);
     expect(w._hideCount).toBe(0);
@@ -330,6 +331,16 @@ describe('hide-all event', () => {
     expect(w._hideCount).toBe(1);
   });
 
+  test('is idempotent with a linked child', () => {
+    const wm = new WindowManager({ screen: makeScreen() });
+    const main = makeWin(), tooltip = makeWin();
+    wm.register('main',    main,    createMainWindowState(0,0,100,100));
+    wm.register('tooltip', tooltip, createTooltipWindowState('main'));
+    wm.emit('hide-all');
+    wm.emit('hide-all');
+    expect(tooltip._hideCount).toBe(1);
+  });
+
   test('circular linkedTo does not hang', () => {
     const wm = new WindowManager({ screen: makeScreen() });
     const sa = createMainWindowState(0,0,100,100); sa.linkedTo = 'b';
@@ -373,6 +384,19 @@ describe('show-all event', () => {
     wm.emit('show-all');
     wm.emit('show-all');
     expect(w._showCount).toBe(1);
+  });
+
+  test('is idempotent with a linked, autoShow child', () => {
+    const wm = new WindowManager({ screen: makeScreen() });
+    const main = makeWin(); main._shown = false;
+    const mainState = createMainWindowState(0,0,100,100); mainState.visible = false;
+    wm.register('main', main, mainState);
+    const sub = makeWin(); sub._shown = false;
+    const subState = createSubAgentWindowState('main','g',0,0,50,50); subState.visible = false;
+    wm.register('sub', sub, subState);
+    wm.emit('show-all');
+    wm.emit('show-all');
+    expect(sub._showCount).toBe(1);
   });
 });
 
@@ -445,7 +469,8 @@ describe('_tick', () => {
   test('hover enter/leave is idempotent', () => {
     const wm = new WindowManager({ screen: makeScreen() });
     const w = makeWin({ x: 0, y: 0, w: 100, h: 100 });
-    wm.register('main', w, createMainWindowState(0, 0, 100, 100));
+    wm.register('main', w, createMainWindowState(0, 0, 100, 100)); // register() reconciles once
+    w._ignoreCallCount = 0; // isolate the assertion to _tick's own behavior
     wm._tick({ x: 50, y: 50 });
     wm._tick({ x: 50, y: 50 }); // same — no-op
     expect(w._ignoreCallCount).toBe(1);
