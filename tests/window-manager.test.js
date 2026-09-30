@@ -481,6 +481,16 @@ describe('_tick', () => {
     wm.register('dead', makeWin({ destroyed: true }), createMainWindowState(0,0,100,100));
     expect(() => wm._tick({ x: 0, y: 0 })).not.toThrow();
   });
+
+  test('does not hover-track a window with trackHover: false, even when the cursor is inside its bounds', () => {
+    const wm = new WindowManager({ screen: makeScreen() });
+    const w = makeWin({ x: 0, y: 0, w: 100, h: 100 });
+    const state = { ...createTooltipWindowState('main'), x: 0, y: 0, width: 100, height: 100, visible: true };
+    wm.register('tooltip', w, state);
+    w._ignoreCallCount = 0; // isolate the assertion to _tick's own behavior
+    wm._tick({ x: 50, y: 50 }); // cursor inside bounds — would normally trigger hover-enter
+    expect(w._ignoreCallCount).toBe(0);
+  });
 });
 
 // ─── polling loop lifecycle ───────────────────────────────────────────────────

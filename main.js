@@ -295,11 +295,11 @@ async function readRemoteState(baseUrl) {
 function repositionSubAgentWindows() {
   const { height } = screen.getPrimaryDisplay().workAreaSize;
   let stackY = height - SUB_AGENT_BASE_Y_OFFSET;
-  for (const [, subWin] of subAgentWindows) {
+  for (const [sessionId, subWin] of subAgentWindows) {
     if (!subWin.isDestroyed()) {
       const [, winH] = subWin.getSize();
       stackY -= winH;
-      subWin.setPosition(20, stackY);
+      wm.updateState(sessionId, { x: 20, y: stackY });
     }
   }
 }
@@ -555,7 +555,7 @@ function snapToCorner(corner) {
   const { x, y } = cornerPosition(corner, display.workArea.width, display.workArea.height, w, h);
   const nx = display.workArea.x + x;
   const ny = display.workArea.y + y;
-  win.setPosition(nx, ny);
+  wm.updateState('main', { x: nx, y: ny });
   cfgMgr.saveWindowState({ windowX: nx, windowY: ny });
 }
 
@@ -755,7 +755,10 @@ function createWindow() {
   }
 
   // Reset drag if renderer reloads or crashes
-  win.webContents.on('did-finish-load', () => { isDragging = false; });
+  win.webContents.on('did-finish-load', () => {
+    isDragging = false;
+    wm.emit('drag-stop', 'main');
+  });
 
   // Clean up sub-agent windows when main window closes
   win.on('closed', () => {
