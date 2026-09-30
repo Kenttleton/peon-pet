@@ -11,7 +11,7 @@
     "start": "node scripts/start.js",
     "dev": "node scripts/dev.js",
     "build": "electron-builder --mac dir",
-    "test": "jest",
+    "test": "jest --forceExit",
     "test:watch": "jest --watch"
   },
   "build": {
