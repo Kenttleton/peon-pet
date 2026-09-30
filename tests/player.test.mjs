@@ -5,6 +5,9 @@ import {
   createTextureCaches,
   clearTextureCaches,
   stepParticle,
+  shouldAutoSleep,
+  postReactionAnim,
+  shouldForwardEvent,
 } from '../renderer/player.mjs';
 
 describe('advanceFrames', () => {
@@ -139,5 +142,53 @@ describe('stepParticle', () => {
     expect(Number.isNaN(next.x)).toBe(false);
     expect(Number.isNaN(next.y)).toBe(false);
     expect(Number.isNaN(next.vy)).toBe(false);
+  });
+});
+
+describe('shouldAutoSleep', () => {
+  test('main pet, no active session -> auto-sleeps', () => {
+    expect(shouldAutoSleep(false, false)).toBe(true);
+  });
+
+  test('main pet, active session -> does not auto-sleep', () => {
+    expect(shouldAutoSleep(false, true)).toBe(false);
+  });
+
+  test('sub-agent never auto-sleeps, even with no active session', () => {
+    expect(shouldAutoSleep(true, false)).toBe(false);
+  });
+
+  test('sub-agent with active session -> still never auto-sleeps', () => {
+    expect(shouldAutoSleep(true, true)).toBe(false);
+  });
+});
+
+describe('postReactionAnim', () => {
+  test('sub-agent always returns to typing, regardless of session activity', () => {
+    expect(postReactionAnim(true, false)).toBe('typing');
+    expect(postReactionAnim(true, true)).toBe('typing');
+  });
+
+  test('main pet with an active session returns to typing', () => {
+    expect(postReactionAnim(false, true)).toBe('typing');
+  });
+
+  test('main pet with no active session returns to sleeping', () => {
+    expect(postReactionAnim(false, false)).toBe('sleeping');
+  });
+});
+
+describe('shouldForwardEvent', () => {
+  test('main pet forwards every event', () => {
+    expect(shouldForwardEvent(false, 'waking')).toBe(true);
+    expect(shouldForwardEvent(false, 'alarmed')).toBe(true);
+    expect(shouldForwardEvent(false, 'celebrate')).toBe(true);
+  });
+
+  test('sub-agent only forwards waking', () => {
+    expect(shouldForwardEvent(true, 'waking')).toBe(true);
+    expect(shouldForwardEvent(true, 'alarmed')).toBe(false);
+    expect(shouldForwardEvent(true, 'celebrate')).toBe(false);
+    expect(shouldForwardEvent(true, 'annoyed')).toBe(false);
   });
 });

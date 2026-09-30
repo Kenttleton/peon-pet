@@ -78,3 +78,18 @@ export function stepParticle(particle, deltaSeconds) {
     gravity: particle.gravity,
   };
 }
+
+/** Mirrors renderer/app.js:350-355's resetIdleTimer gate. */
+export function shouldAutoSleep(isSubAgent, anySessionActive) {
+  return !isSubAgent && !anySessionActive;
+}
+
+/** Mirrors renderer/app.js:729-737's post-reaction-animation branch. */
+export function postReactionAnim(isSubAgent, anySessionActive) {
+  return (isSubAgent || anySessionActive) ? 'typing' : 'sleeping';
+}
+
+/** Mirrors renderer/app.js:651-657's onEvent sub-agent gate. */
+export function shouldForwardEvent(isSubAgent, anim) {
+  return !isSubAgent || anim === 'waking';
+}
