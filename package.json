@@ -11,8 +11,8 @@
     "start": "node scripts/start.js",
     "dev": "node scripts/dev.js",
     "build": "electron-builder --mac dir",
-    "test": "jest --forceExit",
-    "test:watch": "jest --watch"
+    "test": "node --experimental-vm-modules node_modules/.bin/jest --forceExit",
+    "test:watch": "node --experimental-vm-modules node_modules/.bin/jest --watch"
   },
   "build": {
     "appId": "com.peonpet.app",
@@ -45,11 +45,13 @@
   "jest": {
     "testEnvironment": "node",
     "testMatch": [
-      "**/tests/**/*.test.js"
+      "**/tests/**/*.test.js",
+      "**/tests/**/*.test.mjs"
     ]
   },
   "dependencies": {
     "commander": "^15.0.0",
+    "pixi.js": "^8.21.0",
     "three": "^0.186.0"
   },
   "devDependencies": {
