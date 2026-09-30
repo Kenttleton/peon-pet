@@ -93,3 +93,161 @@ export function postReactionAnim(isSubAgent, anySessionActive) {
 export function shouldForwardEvent(isSubAgent, anim) {
   return !isSubAgent || anim === 'waking';
 }
+
+const REACTION_LOOPS = 3;
+const REACTION_HOLD_MS = 300; // matches renderer/app.js:724-737's setTimeout delay on the last frame of a reaction
+
+/**
+ * Creates a player instance bound to a Pixi-app-like object. The app only
+ * needs `{ stage: { addChild, removeChild }, renderer: { resize } }` —
+ * real PIXI.Application satisfies this; tests inject a plain fake object
+ * instead of mocking pixi.js, mirroring lib/window-manager.js's
+ * constructor-injected `{ screen }` pattern.
+ *
+ * @param {object} pixiApp - see above for the minimal shape required.
+ * @param {{setTimeout?: Function, clearTimeout?: Function}} [timers] - injectable
+ *   timer functions, defaulting to the real globals. Tests pass fakes (e.g.
+ *   jest fake timers or a synchronous stub) instead of waiting 300ms per
+ *   assertion or mocking global setTimeout.
+ */
+export function createPlayer(pixiApp, timers = {}) {
+  const scheduleTimeout = timers.setTimeout || setTimeout;
+  const cancelTimeout = timers.clearTimeout || clearTimeout;
+  const caches = createTextureCaches();
+  let displayObjects = []; // every sprite/bg/border/dot currently on stage, for uniform teardown
+  let animConfig = {};
+  let currentAnim = 'sleeping';
+  let currentVariant = null;
+  let currentFrame = 0;
+  let frameTimer = 0;
+  let remainingLoops = 0;
+  let pendingIdleHandle = null;
+  let isSubAgent = false;
+  let anySessionActive = false;
+  let flashIntensity = 0;
+  let particles = [];
+
+  function clearStage() {
+    for (const obj of displayObjects) {
+      pixiApp.stage.removeChild(obj);
+    }
+    displayObjects = [];
+  }
+
+  function initScene(config) {
+    clearStage();
+    clearTextureCaches(caches);
+    isSubAgent = !!config.subAgent;
+    animConfig = config.animations || {};
+    currentFrame = 0;
+    frameTimer = 0;
+    remainingLoops = 0;
+    if (pendingIdleHandle) { cancelTimeout(pendingIdleHandle); pendingIdleHandle = null; }
+    flashIntensity = 0;
+    particles = [];
+
+    if (config.assets && config.assets.bg) {
+      const bg = { __kind: 'bg', url: config.assets.bg.url };
+      displayObjects.push(bg);
+      pixiApp.stage.addChild(bg);
+    }
+    if (config.assets && config.assets.borders) {
+      const border = { __kind: 'border', url: config.assets.borders.url };
+      displayObjects.push(border);
+      pixiApp.stage.addChild(border);
+    }
+
+    playAnim('sleeping');
+  }
+
+  function pickVariant(animName) {
+    const variants = animConfig[animName];
+    if (!variants || variants.length === 0) return null;
+    if (variants.length === 1) return variants[0];
+    return variants[Math.floor(Math.random() * variants.length)];
+  }
+
+  function playAnim(animName) {
+    currentAnim = animName;
+    currentVariant = pickVariant(animName);
+    currentFrame = 0;
+    frameTimer = 0;
+    remainingLoops = currentVariant && currentVariant.loops != null ? currentVariant.loops : REACTION_LOOPS;
+  }
+
+  function setAnySessionActive(active) {
+    anySessionActive = !!active;
+  }
+
+  function shouldAutoSleepNow() {
+    return shouldAutoSleep(isSubAgent, anySessionActive);
+  }
+
+  function tick(deltaMS) {
+    const deltaSeconds = Math.min(deltaMS / 1000, 0.1);
+    if (flashIntensity > 0) {
+      flashIntensity = Math.max(0, flashIntensity - deltaSeconds * 2.0);
+    }
+    particles = particles
+      .map((p) => stepParticle(p, deltaSeconds))
+      .filter((p) => p.life > 0);
+
+    if (!currentVariant) return;
+    const { frameTimer: newTimer, framesToAdvance } = advanceFrames(frameTimer, deltaSeconds, currentVariant.fps);
+    frameTimer = newTimer;
+    for (let i = 0; i < framesToAdvance; i++) {
+      advanceOneFrame();
+    }
+  }
+
+  function advanceOneFrame() {
+    currentFrame++;
+    if (currentFrame >= currentVariant.frames) {
+      if (currentVariant.loop) {
+        currentFrame = 0;
+      } else if (remainingLoops > 0) {
+        remainingLoops--;
+        currentFrame = 0;
+      } else {
+        currentFrame = currentVariant.frames - 1;
+        if (!pendingIdleHandle) {
+          pendingIdleHandle = scheduleTimeout(() => {
+            pendingIdleHandle = null;
+            playAnim(postReactionAnim(isSubAgent, anySessionActive));
+          }, REACTION_HOLD_MS);
+        }
+      }
+    }
+  }
+
+  function triggerFlash(r, g, b, intensity = 0.6) {
+    flashIntensity = intensity;
+  }
+
+  function burstParticles() {
+    const next = [];
+    for (let i = 0; i < 30; i++) {
+      next.push({ x: 0, y: 0, vx: (Math.random() - 0.5) * 100, vy: -Math.random() * 100, life: 1.2, gravity: 200 });
+    }
+    particles = next;
+  }
+
+  function updateDots(sessions) {
+    if (isSubAgent) return;
+    // dot sprite creation/positioning is a Pixi-object concern wired fully in app.js (Task 6);
+    // player.js exposes this hook so app.js can call it uniformly regardless of subAgent.
+  }
+
+  return {
+    initScene,
+    playAnim,
+    tick,
+    updateDots,
+    triggerFlash,
+    burstParticles,
+    setAnySessionActive,
+    shouldAutoSleepNow,
+    get isSubAgent() { return isSubAgent; },
+    _caches: caches,
+  };
+}

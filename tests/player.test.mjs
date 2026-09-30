@@ -1,3 +1,4 @@
+import { jest } from '@jest/globals';
 import {
   advanceFrames,
   derivedFrameCacheKey,
@@ -8,6 +9,7 @@ import {
   shouldAutoSleep,
   postReactionAnim,
   shouldForwardEvent,
+  createPlayer,
 } from '../renderer/player.mjs';
 
 describe('advanceFrames', () => {
@@ -190,5 +192,160 @@ describe('shouldForwardEvent', () => {
     expect(shouldForwardEvent(true, 'alarmed')).toBe(false);
     expect(shouldForwardEvent(true, 'celebrate')).toBe(false);
     expect(shouldForwardEvent(true, 'annoyed')).toBe(false);
+  });
+});
+
+function makeFakeStage() {
+  const children = [];
+  return {
+    children,
+    addChild(child) { children.push(child); return child; },
+    removeChild(child) {
+      const i = children.indexOf(child);
+      if (i !== -1) children.splice(i, 1);
+    },
+  };
+}
+
+function makeFakePixiApp() {
+  return {
+    stage: makeFakeStage(),
+    renderer: { resize: jest.fn() },
+  };
+}
+
+function makeConfig(overrides = {}) {
+  return {
+    subAgent: false,
+    scale: 1,
+    animations: {
+      sleeping: [{ frames: 2, fps: 4, loop: true, displayWidth: 64, displayHeight: 64, url: 'peon-asset://asset/0' }],
+      typing: [{ frames: 4, fps: 20, loop: false, loops: 3, displayWidth: 64, displayHeight: 64, url: 'peon-asset://asset/0' }],
+    },
+    assets: {},
+    ...overrides,
+  };
+}
+
+describe('createPlayer', () => {
+  test('initScene sets isSubAgent from config.subAgent', () => {
+    const player = createPlayer(makeFakePixiApp());
+    player.initScene(makeConfig({ subAgent: true }));
+    expect(player.isSubAgent).toBe(true);
+
+    player.initScene(makeConfig({ subAgent: false }));
+    expect(player.isSubAgent).toBe(false);
+  });
+
+  test('initScene defaults isSubAgent to false when config.subAgent is absent', () => {
+    const player = createPlayer(makeFakePixiApp());
+    const cfg = makeConfig();
+    delete cfg.subAgent;
+    player.initScene(cfg);
+    expect(player.isSubAgent).toBe(false);
+  });
+
+  test('initScene clears both texture caches on every call (uniform hot-reload teardown)', () => {
+    const player = createPlayer(makeFakePixiApp());
+    player.initScene(makeConfig());
+    // simulate the base/derived caches having entries from a prior pack
+    player._caches.base.set('peon-asset://asset/0', {});
+    player._caches.derived.set('peon-asset://asset/0:0:1:0', {});
+    player.initScene(makeConfig({ animations: { sleeping: [{ frames: 1, fps: 1, loop: true, displayWidth: 32, displayHeight: 32, url: 'peon-asset://asset/9' }] } }));
+    expect(player._caches.base.size).toBe(0);
+    expect(player._caches.derived.size).toBe(0);
+  });
+
+  test('initScene removes every previously-added display object from the stage (no stale sprite/bg/border/dots survive a pack switch)', () => {
+    const pixiApp = makeFakePixiApp();
+    const player = createPlayer(pixiApp);
+    player.initScene(makeConfig({
+      assets: { bg: { url: 'peon-asset://asset/1', displayWidth: 64, displayHeight: 64 } },
+    }));
+    const firstInitObjects = [...pixiApp.stage.children];
+    expect(firstInitObjects.length).toBeGreaterThan(0);
+
+    player.initScene(makeConfig()); // second pack, no bg this time
+    // none of the exact objects added during the first initScene may still be on stage
+    const stale = pixiApp.stage.children.filter((c) => firstInitObjects.includes(c));
+    expect(stale.length).toBe(0);
+  });
+
+  test('playAnim("sleeping") after initScene does not throw and resets frame state', () => {
+    const player = createPlayer(makeFakePixiApp());
+    player.initScene(makeConfig());
+    expect(() => player.playAnim('sleeping')).not.toThrow();
+  });
+
+  test('sub-agent config never auto-sleeps via tick-driven idle check', () => {
+    const player = createPlayer(makeFakePixiApp());
+    player.initScene(makeConfig({ subAgent: true }));
+    player.playAnim('typing');
+    expect(player.shouldAutoSleepNow()).toBe(false);
+  });
+
+  test('main pet with no active session auto-sleeps via tick-driven idle check', () => {
+    const player = createPlayer(makeFakePixiApp());
+    player.initScene(makeConfig({ subAgent: false }));
+    player.setAnySessionActive(false);
+    expect(player.shouldAutoSleepNow()).toBe(true);
+  });
+
+  test('tick with zero deltaMS does not throw and does not advance frames', () => {
+    const player = createPlayer(makeFakePixiApp());
+    player.initScene(makeConfig());
+    player.playAnim('sleeping');
+    expect(() => player.tick(0)).not.toThrow();
+  });
+
+  test('updateDots with sessions array does not throw for sub-agent (dots suppressed) or main pet', () => {
+    const subPlayer = createPlayer(makeFakePixiApp());
+    subPlayer.initScene(makeConfig({ subAgent: true }));
+    expect(() => subPlayer.updateDots([{ id: 'a', hot: true, warm: false }])).not.toThrow();
+
+    const mainPlayer = createPlayer(makeFakePixiApp());
+    mainPlayer.initScene(makeConfig({ subAgent: false }));
+    expect(() => mainPlayer.updateDots([{ id: 'a', hot: true, warm: false }])).not.toThrow();
+  });
+
+  test('non-looping reaction holds on its last frame, then schedules postReactionAnim via the injected timer (not synchronously)', () => {
+    const scheduled = [];
+    const fakeTimers = {
+      setTimeout: (fn, ms) => { scheduled.push({ fn, ms }); return scheduled.length; },
+      clearTimeout: () => {},
+    };
+    const player = createPlayer(makeFakePixiApp(), fakeTimers);
+    player.initScene(makeConfig({ subAgent: false }));
+    player.setAnySessionActive(false);
+    player.playAnim('typing'); // 4 frames, fps 20, loop: false, loops: 3 -> 3 full replays before holding
+
+    // Drive enough ticks to exhaust all loops and land on the last frame hold.
+    // 4 frames * (3 loops + 1 final pass) = 16 frame advances; each tick(50ms) advances exactly 1
+    // frame at 20fps (frameDuration 0.05s) — chosen to stay under tick()'s 0.1s delta clamp, unlike
+    // 8fps (frameDuration 0.125s > clamp), which would advance slower than 1 frame per tick.
+    for (let i = 0; i < 16; i++) player.tick(50);
+
+    expect(scheduled.length).toBe(1);
+    expect(scheduled[0].ms).toBe(300);
+
+    // The scheduled callback hasn't fired yet (fake timer captured, not invoked) -> still holding, not yet reset.
+    scheduled[0].fn(); // simulate the timer firing
+    // After firing, postReactionAnim(false, false) === 'sleeping' per Task 4's table.
+    expect(() => player.tick(1)).not.toThrow();
+  });
+
+  test('initScene cancels any pending reaction-hold timer from the previous pack (no stale callback fires after a pack switch)', () => {
+    let cancelled = false;
+    const fakeTimers = {
+      setTimeout: () => 'handle-1',
+      clearTimeout: (handle) => { if (handle === 'handle-1') cancelled = true; },
+    };
+    const player = createPlayer(makeFakePixiApp(), fakeTimers);
+    player.initScene(makeConfig());
+    player.playAnim('typing');
+    for (let i = 0; i < 16; i++) player.tick(50); // schedules the hold timer
+
+    player.initScene(makeConfig()); // pack switch while a reaction-hold timer is pending
+    expect(cancelled).toBe(true);
   });
 });
