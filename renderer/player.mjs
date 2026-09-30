@@ -25,3 +25,56 @@ export function advanceFrames(frameTimer, deltaSeconds, fps) {
   const timer = totalTime - framesToAdvance * frameDuration;
   return { frameTimer: timer, framesToAdvance };
 }
+
+/**
+ * Cache key for a derived (already-sliced-into-a-frame) texture. Two
+ * variants can share one atlas `url` at different `row`s (CEAP row-based
+ * sharing) or use separate files — the slicing, not just the file, is
+ * pack-specific, so `row`/`rows`/`frameIndex` are all part of the key.
+ */
+export function derivedFrameCacheKey(url, row, rows, frameIndex) {
+  return `${url}:${row}:${rows}:${frameIndex}`;
+}
+
+/**
+ * Pixel-space frame rectangle (top-left origin), matching PIXI.Rectangle
+ * conventions. Row 0 is the TOP of the image — this is the opposite of
+ * lib/anim-state.js#computeUVs's v0/v1 (bottom-origin, Three.js UV
+ * convention), so that function is not reused here.
+ */
+export function computeFrameRect(pngWidth, pngHeight, row, rows, frames, frameIndex) {
+  const width = pngWidth / frames;
+  const height = pngHeight / rows;
+  return {
+    x: frameIndex * width,
+    y: row * height,
+    width,
+    height,
+  };
+}
+
+export function createTextureCaches() {
+  return { base: new Map(), derived: new Map() };
+}
+
+export function clearTextureCaches(caches) {
+  caches.base.clear();
+  caches.derived.clear();
+}
+
+/**
+ * Integrates one particle for deltaSeconds, ported from the manual
+ * position/velocity buffer math in renderer/app.js:243-302. Pure —
+ * no Pixi dependency — so it's testable without a GPU context.
+ */
+export function stepParticle(particle, deltaSeconds) {
+  const vy = particle.vy + particle.gravity * deltaSeconds;
+  return {
+    x: particle.x + particle.vx * deltaSeconds,
+    y: particle.y + vy * deltaSeconds,
+    vx: particle.vx,
+    vy,
+    life: particle.life - deltaSeconds,
+    gravity: particle.gravity,
+  };
+}
