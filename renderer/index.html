@@ -10,7 +10,7 @@
     canvas { display: block; }
     /* First-launch only: shown while every category's texture is
        preloaded, so a larger pack doesn't flash blank/partial frames.
-       Never shown again once the pet is up — see renderer/app.js. */
+       Never shown again once the pet is up — see renderer/app.mjs. */
     #loading {
       position: fixed;
       inset: 0;
@@ -36,6 +36,6 @@
 <body>
   <canvas id="c"></canvas>
   <div id="loading"><div class="spinner"></div></div>
-  <script type="module" src="app.js"></script>
+  <script type="module" src="app.mjs"></script>
 </body>
 </html>

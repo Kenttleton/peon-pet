@@ -51,8 +51,7 @@
   },
   "dependencies": {
     "commander": "^15.0.0",
-    "pixi.js": "^8.21.0",
-    "three": "^0.186.0"
+    "pixi.js": "^8.21.0"
   },
   "devDependencies": {
     "canvas": "^3.2.3",

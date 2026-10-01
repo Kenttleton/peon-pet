@@ -232,10 +232,19 @@ export function createPlayer(pixiApp, timers = {}) {
     particles = next;
   }
 
+  let currentSessions = [];
+
   function updateDots(sessions) {
-    if (isSubAgent) return;
-    // dot sprite creation/positioning is a Pixi-object concern wired fully in app.js (Task 6);
-    // player.js exposes this hook so app.js can call it uniformly regardless of subAgent.
+    currentSessions = sessions;
+    // Pixi dot-sprite creation/positioning from computeDotLayout's output is
+    // wired by app.js, which owns the actual PIXI.Graphics objects; player.js
+    // only tracks session state here so getCurrentSessions()/hit-testing can
+    // use it regardless of subAgent (sub-agent windows simply never call the
+    // hit-test/tooltip path, since app.js never wires their hover listeners).
+  }
+
+  function getCurrentSessions() {
+    return currentSessions;
   }
 
   return {
@@ -243,6 +252,7 @@ export function createPlayer(pixiApp, timers = {}) {
     playAnim,
     tick,
     updateDots,
+    getCurrentSessions,
     triggerFlash,
     burstParticles,
     setAnySessionActive,
@@ -250,4 +260,100 @@ export function createPlayer(pixiApp, timers = {}) {
     get isSubAgent() { return isSubAgent; },
     _caches: caches,
   };
+}
+
+// --- Session dots (ported from renderer/app.js:156-241, 486-502, 533-557) ---
+
+const MAX_DOTS = 10;
+const DOT_SIZE_BASE = 12;
+const DOT_GAP_BASE = 6;
+const DOT_TOP_PADDING_BASE = 12;
+const DOT_REFERENCE_WIDTH = 200; // window width these base constants were tuned for
+
+/**
+ * Lays out up to MAX_DOTS session dots, centered horizontally, scaled by
+ * how far winWidth has grown/shrunk from the 200px reference width the
+ * base constants were tuned for. Mirrors renderer/app.js's updateDots
+ * (lines 215-241) and hitTestDots (lines 486-502) positioning math, but as
+ * a pure function returning dot centers instead of mutating Pixi/Three
+ * objects directly — app.js positions its own dot sprites from this.
+ *
+ * @param {Array<{hot: boolean, warm: boolean}>} sessions
+ * @param {number} winWidth
+ * @returns {Array<{x: number, y: number, hot: boolean, warm: boolean}>}
+ */
+export function computeDotLayout(sessions, winWidth) {
+  const scaleFactor = winWidth / DOT_REFERENCE_WIDTH;
+  const dotSize = DOT_SIZE_BASE * scaleFactor;
+  const dotGap = DOT_GAP_BASE * scaleFactor;
+  const count = Math.min(sessions.length, MAX_DOTS);
+  const totalWidth = count * dotSize + Math.max(0, count - 1) * dotGap;
+  const startX = -totalWidth / 2 + dotSize / 2;
+  const y = DOT_TOP_PADDING_BASE * scaleFactor;
+
+  const layout = [];
+  for (let i = 0; i < count; i++) {
+    layout.push({
+      x: startX + i * (dotSize + dotGap),
+      y,
+      hot: !!sessions[i].hot,
+      warm: !!sessions[i].warm,
+    });
+  }
+  return layout;
+}
+
+/**
+ * Finds which dot (if any) contains point (px, py), using a hit radius
+ * slightly wider than the visual dot for easier hover (mirrors
+ * renderer/app.js:486-502's hitTestDots).
+ *
+ * @param {number} px
+ * @param {number} py
+ * @param {Array<{x: number, y: number}>} dotLayout - from computeDotLayout
+ * @param {number} winWidth
+ * @returns {number} dot index, or -1 if no dot contains the point
+ */
+export function hitTestDot(px, py, dotLayout, winWidth) {
+  if (dotLayout.length === 0) return -1;
+  const scaleFactor = winWidth / DOT_REFERENCE_WIDTH;
+  const hitRadius = DOT_SIZE_BASE * scaleFactor;
+  for (let i = 0; i < dotLayout.length; i++) {
+    const dx = px - dotLayout[i].x;
+    const dy = py - dotLayout[i].y;
+    if (dx * dx + dy * dy < hitRadius * hitRadius) return i;
+  }
+  return -1;
+}
+
+/**
+ * Builds the tooltip's HTML content: per-dot detail when hovering a
+ * specific dot (hitIndex >= 0), otherwise an aggregate summary — mirrors
+ * renderer/app.js:538-557's handleMouseMove body.
+ *
+ * @param {Array<{id: string, hot: boolean, warm: boolean, cwd: ?string}>} sessions
+ * @param {number} hitIndex - index into `sessions`, or -1 for no hover hit
+ * @param {{hot: string, warm: string, off: string}} dotColors - CSS color strings
+ * @returns {string} HTML
+ */
+export function buildTooltipHtml(sessions, hitIndex, dotColors) {
+  if (hitIndex >= 0 && sessions[hitIndex]) {
+    const s = sessions[hitIndex];
+    const status = s.hot
+      ? `<span style="color:${dotColors.hot}">active</span>`
+      : s.warm
+        ? `<span style="color:${dotColors.warm}">idle</span>`
+        : `<span style="color:${dotColors.off}">cold</span>`;
+    const label = s.cwd ? s.cwd.split('/').filter(Boolean).pop() : ('…' + s.id.slice(-8));
+    return `${label} &bull; ${status}`;
+  }
+
+  const active = sessions.filter((s) => s.hot).length;
+  const total = sessions.length;
+  if (total === 0) return 'Peon Pet';
+
+  const names = sessions
+    .map((s) => (s.cwd ? s.cwd.split('/').filter(Boolean).pop() : null))
+    .filter(Boolean);
+  return names.length ? names.join('<br>') : `${active}/${total} sessions`;
 }

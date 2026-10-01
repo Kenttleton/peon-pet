@@ -10,6 +10,9 @@ import {
   postReactionAnim,
   shouldForwardEvent,
   createPlayer,
+  computeDotLayout,
+  hitTestDot,
+  buildTooltipHtml,
 } from '../renderer/player.mjs';
 
 describe('advanceFrames', () => {
@@ -347,5 +350,94 @@ describe('createPlayer', () => {
 
     player.initScene(makeConfig()); // pack switch while a reaction-hold timer is pending
     expect(cancelled).toBe(true);
+  });
+});
+
+describe('computeDotLayout', () => {
+  test('empty sessions -> empty layout', () => {
+    expect(computeDotLayout([], 200)).toEqual([]);
+  });
+
+  test('single session is centered horizontally', () => {
+    const layout = computeDotLayout([{ hot: true, warm: false }], 200);
+    expect(layout).toHaveLength(1);
+    expect(layout[0].x).toBeCloseTo(0);
+  });
+
+  test('positions scale with window width relative to the 200px reference width', () => {
+    const at200 = computeDotLayout([{ hot: true, warm: false }, { hot: false, warm: true }], 200);
+    const at400 = computeDotLayout([{ hot: true, warm: false }, { hot: false, warm: true }], 400);
+    // at double the reference width, dot spacing (gap between dot centers) doubles
+    const gap200 = at200[1].x - at200[0].x;
+    const gap400 = at400[1].x - at400[0].x;
+    expect(gap400).toBeCloseTo(gap200 * 2);
+  });
+
+  test('caps at 10 dots even with more sessions', () => {
+    const sessions = Array.from({ length: 15 }, () => ({ hot: false, warm: false }));
+    const layout = computeDotLayout(sessions, 200);
+    expect(layout).toHaveLength(10);
+  });
+
+  test('each entry carries hot/warm through for color selection', () => {
+    const layout = computeDotLayout([{ hot: true, warm: false }, { hot: false, warm: true }], 200);
+    expect(layout[0].hot).toBe(true);
+    expect(layout[1].warm).toBe(true);
+  });
+});
+
+describe('hitTestDot', () => {
+  test('returns -1 when there are no dots', () => {
+    expect(hitTestDot(0, 0, [], 200)).toBe(-1);
+  });
+
+  test('returns the index of the dot under the point', () => {
+    const layout = computeDotLayout([{ hot: true, warm: false }], 200);
+    expect(hitTestDot(layout[0].x, layout[0].y, layout, 200)).toBe(0);
+  });
+
+  test('returns -1 when the point is far from every dot', () => {
+    const layout = computeDotLayout([{ hot: true, warm: false }], 200);
+    expect(hitTestDot(layout[0].x + 1000, layout[0].y + 1000, layout, 200)).toBe(-1);
+  });
+});
+
+describe('buildTooltipHtml', () => {
+  test('no sessions -> default label', () => {
+    expect(buildTooltipHtml([], -1, { hot: 'g', warm: 'y', off: 'gray' })).toBe('Peon Pet');
+  });
+
+  test('hovering a specific dot shows that session\'s cwd-derived name and status', () => {
+    const sessions = [{ id: 'abc12345', hot: true, warm: false, cwd: '/Users/x/my-project' }];
+    const html = buildTooltipHtml(sessions, 0, { hot: 'green', warm: 'yellow', off: 'gray' });
+    expect(html).toContain('my-project');
+    expect(html).toContain('active');
+    expect(html).toContain('green');
+  });
+
+  test('hovering a dot with no cwd falls back to a truncated session id', () => {
+    const sessions = [{ id: 'abcdefgh12345678', hot: false, warm: true, cwd: null }];
+    const html = buildTooltipHtml(sessions, 0, { hot: 'g', warm: 'y', off: 'gray' });
+    expect(html).toContain('12345678');
+    expect(html).toContain('idle');
+  });
+
+  test('not hovering any dot, with sessions present, shows cwd names joined', () => {
+    const sessions = [
+      { id: 'a', hot: true, warm: false, cwd: '/x/proj-one' },
+      { id: 'b', hot: false, warm: false, cwd: '/x/proj-two' },
+    ];
+    const html = buildTooltipHtml(sessions, -1, { hot: 'g', warm: 'y', off: 'gray' });
+    expect(html).toContain('proj-one');
+    expect(html).toContain('proj-two');
+  });
+
+  test('not hovering any dot, sessions with no cwd fall back to an active/total count', () => {
+    const sessions = [
+      { id: 'a', hot: true, warm: false, cwd: null },
+      { id: 'b', hot: false, warm: false, cwd: null },
+    ];
+    const html = buildTooltipHtml(sessions, -1, { hot: 'g', warm: 'y', off: 'gray' });
+    expect(html).toBe('1/2 sessions');
   });
 });
