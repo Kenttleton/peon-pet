@@ -221,6 +221,13 @@ export function createPlayer(pixiApp, options = {}) {
   // bg/border sprites, since window sizing is IPC-driven and out of scope
   // for player.js per the "no DOM/IPC in player.js" constraint.
   const onVariantChanged = options.onVariantChanged || (() => {});
+  // Fired at the player's own state transitions — intentionally separate
+  // from onVariantChanged (which fires on every playAnim call, including
+  // a no-op re-pick of the same category) so a console logger or test can
+  // observe only genuine state changes. player.js stays logging-agnostic:
+  // it never calls console.* itself, matching its "no DOM/IPC" constraint
+  // — app.js supplies a real logger, tests supply a plain array-pusher.
+  const onStateChange = options.onStateChange || (() => {});
 
   const caches = createTextureCaches();
   let animConfig = {};
@@ -267,6 +274,8 @@ export function createPlayer(pixiApp, options = {}) {
   function initScene(config) {
     sceneGeneration++;
     const myGeneration = sceneGeneration;
+
+    onStateChange('sceneInit', { subAgent: !!config.subAgent });
 
     clearStage();
     clearTextureCaches(caches);
@@ -321,6 +330,9 @@ export function createPlayer(pixiApp, options = {}) {
     // never clear the one already playing (renderer/app.js:456-461).
     const picked = pickVariant(animConfig, animName, lastPlayedIndex[animName]);
     if (!picked) return Promise.resolve();
+
+    const previousAnim = currentAnim;
+    onStateChange('anim', { from: previousAnim, to: animName });
 
     if (pendingIdleHandle) { cancelTimeout(pendingIdleHandle); pendingIdleHandle = null; }
     currentAnim = animName;

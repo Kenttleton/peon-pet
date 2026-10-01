@@ -547,6 +547,59 @@ describe('createPlayer', () => {
     // the now-superseded first pack's slow load must NOT clobber the second pack's sprite
     expect(player.mainSprite.texture.url).toBe('fast-pack');
   });
+
+  describe('onStateChange', () => {
+    function makePlayerWithStateLog(overrides = {}) {
+      const events = [];
+      const player = createPlayer(makeFakePixiApp(), makePlayerDeps({
+        onStateChange: (event, data) => events.push({ event, data }),
+        ...overrides,
+      }));
+      return { player, events };
+    }
+
+    test('emits "anim" when playAnim actually changes the current animation', async () => {
+      const { player, events } = makePlayerWithStateLog();
+      await player.initScene(makeConfig());
+      events.length = 0; // ignore initScene's own implicit sleeping playAnim
+      await player.playAnim('typing');
+      expect(events).toContainEqual({ event: 'anim', data: { from: 'sleeping', to: 'typing' } });
+    });
+
+    test('does not emit "anim" when playAnim is a no-op (CEAP category fallback for an undeclared category)', async () => {
+      const { player, events } = makePlayerWithStateLog();
+      await player.initScene(makeConfig());
+      events.length = 0;
+      await player.playAnim('annoyed'); // not declared in makeConfig()'s animations
+      expect(events.filter((e) => e.event === 'anim')).toEqual([]);
+    });
+
+    test('emits "autoSleep" when the idle timer fires and puts the pet to sleep', async () => {
+      const fakeTimers = {
+        setTimeout: (fn) => { fakeTimers._fn = fn; return 'handle'; },
+        clearTimeout: () => {},
+      };
+      const { player, events } = makePlayerWithStateLog({ timers: fakeTimers });
+      await player.initScene(makeConfig());
+      await player.playAnim('typing');
+      for (let i = 0; i < 12; i++) player.tick(50); // drive to the reaction hold
+      events.length = 0;
+      await fakeTimers._fn(); // simulate the reaction-hold timer firing
+      expect(events).toContainEqual({ event: 'anim', data: { from: 'typing', to: 'sleeping' } });
+    });
+
+    test('emits "sceneInit" on every initScene call, with the pack\'s subAgent flag', async () => {
+      const { player, events } = makePlayerWithStateLog();
+      await player.initScene(makeConfig({ subAgent: true }));
+      expect(events).toContainEqual({ event: 'sceneInit', data: { subAgent: true } });
+    });
+
+    test('defaults to a no-op when onStateChange is not provided (does not throw)', async () => {
+      const player = createPlayer(makeFakePixiApp(), makePlayerDeps());
+      await expect(player.initScene(makeConfig())).resolves.not.toThrow();
+      await expect(player.playAnim('typing')).resolves.not.toThrow();
+    });
+  });
 });
 
 describe('computeDotLayout', () => {

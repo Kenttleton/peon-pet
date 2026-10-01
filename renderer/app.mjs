@@ -32,6 +32,24 @@ import {
 // drops the (here, impossible) off-main-thread optimization.
 PIXI.Assets.setPreferences({ preferWorkers: false });
 
+// Reactive-state logging: every IPC event in and every player state
+// transition out, so the event-driven chain (main process -> peon-event/
+// peon-config/session-update -> player state -> render) is directly
+// observable in DevTools instead of inferred from screenshots. Off by
+// default in production; enabled via ?debug=1 on the loaded URL (set
+// manually in DevTools, or main.js could append it for --dev launches)
+// or a one-time `localStorage.setItem('peon-pet-debug', '1')|toggle, so it
+// survives reloads during a debugging session without touching main.js.
+const DEBUG = new URLSearchParams(location.search).has('debug') || localStorage.getItem('peon-pet-debug') === '1';
+function log(category, message, data) {
+  if (!DEBUG) return;
+  if (data !== undefined) {
+    console.log(`[peon-pet:${category}] ${message}`, data);
+  } else {
+    console.log(`[peon-pet:${category}] ${message}`);
+  }
+}
+
 const canvas = document.getElementById('c');
 const app = new PIXI.Application();
 await app.init({ canvas, backgroundAlpha: 0, antialias: false, resolution: window.devicePixelRatio || 1 });
@@ -69,6 +87,7 @@ function onVariantChanged(variant, { bgAsset, borderAsset }) {
   const winW = Math.round(winSize.width);
   const winH = Math.round(winSize.height);
   const sizeChanged = winW !== currentWinWidth || winH !== currentWinHeight;
+  log('resize', sizeChanged ? `${currentWinWidth}x${currentWinHeight} -> ${winW}x${winH}` : `unchanged at ${winW}x${winH} (repositioning sprites anyway)`);
   currentWinWidth = winW;
   currentWinHeight = winH;
 
@@ -140,6 +159,7 @@ const player = createPlayer(app, {
   displayFactory: { createSprite },
   textureLoader: createPixiTextureLoader(PIXI),
   onVariantChanged,
+  onStateChange: (event, data) => log('state', event, data),
 });
 
 let dragging = false;
@@ -208,6 +228,7 @@ function handlePointerLeave() {
 canvas.addEventListener('pointerdown', (e) => {
   if (e.button !== 0) return; // left-click only, matches renderer/app.js:508
   dragging = true;
+  log('drag', 'start');
   window.peonBridge.hideTooltip();
   canvas.setPointerCapture(e.pointerId);
   window.peonBridge.startDrag();
@@ -215,6 +236,7 @@ canvas.addEventListener('pointerdown', (e) => {
 canvas.addEventListener('pointerup', (e) => {
   if (e.button !== 0 || !dragging) return;
   dragging = false;
+  log('drag', 'stop');
   window.peonBridge.stopDrag();
 });
 canvas.addEventListener('lostpointercapture', () => {
@@ -243,11 +265,15 @@ const IDLE_TIMEOUT_MS = 30000;
 function resetIdleTimer() {
   if (idleTimerHandle) clearTimeout(idleTimerHandle);
   if (player.shouldAutoSleepNow()) {
+    log('idle', `timer armed (${IDLE_TIMEOUT_MS / 1000}s)`);
     idleTimerHandle = setTimeout(() => player.playAnim('sleeping'), IDLE_TIMEOUT_MS);
+  } else {
+    log('idle', 'timer skipped (sub-agent or an active session)');
   }
 }
 
 window.peonBridge.onConfig(async (config) => {
+  log('ipc', 'peon-config received', { subAgent: config.subAgent, scale: config.scale, border: !!(config.assets && config.assets.borders), categories: Object.keys(config.animations || {}) });
   currentScale = config.scale ?? 1;
   currentBorderMargin = (config.assets && config.assets.borders && config.assets.borders.displayMargin) || { x: 0, y: 0 };
   // Reset to defaults every config, never merge onto the previous pack's
@@ -269,15 +295,23 @@ window.peonBridge.onConfig(async (config) => {
   resetIdleTimer();
 });
 
-window.peonBridge.onEvent(({ anim }) => {
-  if (!shouldForwardEvent(player.isSubAgent, anim)) return;
+window.peonBridge.onEvent(({ anim, event }) => {
+  log('ipc', 'peon-event received', { anim, event });
+  if (!shouldForwardEvent(player.isSubAgent, anim)) {
+    log('event', `dropped (sub-agent only forwards 'waking')`, { anim });
+    return;
+  }
   // Don't wake if already active — only wake from sleep (renderer/app.js:655)
-  if (anim === 'waking' && player.getCurrentAnim() !== 'sleeping') return;
+  if (anim === 'waking' && player.getCurrentAnim() !== 'sleeping') {
+    log('event', `dropped ('waking' ignored — already awake)`, { currentAnim: player.getCurrentAnim() });
+    return;
+  }
   player.playAnim(anim);
   resetIdleTimer();
 });
 
 window.peonBridge.onSessionUpdate(({ sessions }) => {
+  log('ipc', 'session-update received', { count: sessions.length, hot: sessions.filter((s) => s.hot).length, warm: sessions.filter((s) => s.warm).length });
   player.updateDots(sessions);
   redrawDots();
   // anySessionActive matches renderer/app.js:663 exactly: `hot` only, never
