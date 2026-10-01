@@ -1,4 +1,9 @@
-import * as PIXI from '../node_modules/pixi.js/lib/index.mjs';
+// Uses the pre-bundled dist/pixi.mjs, not lib/index.mjs (package.json's
+// "exports" "import" target) — lib/index.mjs re-exports `eventemitter3` as
+// a bare specifier, which Node/bundlers resolve via node_modules but a
+// browser's native ES module loader cannot ("Failed to resolve module
+// specifier"); dist/pixi.mjs inlines every dependency, so it has none.
+import * as PIXI from '../node_modules/pixi.js/dist/pixi.mjs';
 import {
   createPlayer,
   shouldForwardEvent,
