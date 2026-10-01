@@ -8,9 +8,10 @@
     "peon-pet": "./bin/peon-pet.js"
   },
   "scripts": {
-    "start": "node scripts/start.js",
-    "dev": "node scripts/dev.js",
-    "build": "electron-builder --mac dir",
+    "build:renderer": "node scripts/build-renderer.js",
+    "start": "npm run build:renderer && node scripts/start.js",
+    "dev": "npm run build:renderer && node scripts/dev.js",
+    "build": "npm run build:renderer && electron-builder --mac dir",
     "test": "node --experimental-vm-modules node_modules/.bin/jest --forceExit",
     "test:watch": "node --experimental-vm-modules node_modules/.bin/jest --watch"
   },
@@ -57,6 +58,7 @@
     "canvas": "^3.2.3",
     "electron": "^44.4.3",
     "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.2",
     "jest": "^30.5.2"
   },
   "overrides": {

@@ -1,9 +1,18 @@
-// Uses the pre-bundled dist/pixi.mjs, not lib/index.mjs (package.json's
-// "exports" "import" target) — lib/index.mjs re-exports `eventemitter3` as
-// a bare specifier, which Node/bundlers resolve via node_modules but a
-// browser's native ES module loader cannot ("Failed to resolve module
-// specifier"); dist/pixi.mjs inlines every dependency, so it has none.
-import * as PIXI from '../node_modules/pixi.js/dist/pixi.mjs';
+// This file is bundled by esbuild (scripts/build-renderer.js, run before
+// npm start/dev) into renderer/dist/app.js — never loaded as raw source by
+// the browser. Bare imports like 'pixi.js' and 'pixi.js/unsafe-eval' are
+// resolved by esbuild the normal Node/bundler way; the output bundle has
+// no imports left to resolve, so Electron's renderer process never needs
+// to resolve a bare specifier itself.
+//
+// 'pixi.js/unsafe-eval' is imported for its side effect only: it patches
+// PixiJS's internal renderer/shader/particle classes to use CSP-safe
+// polyfills instead of `new Function(...)`-based code generation, which
+// this app's CSP (script-src 'self', no unsafe-eval) blocks outright —
+// without this import, PIXI.Application.init() throws immediately
+// ("Current environment does not allow unsafe-eval").
+import * as PIXI from 'pixi.js';
+import 'pixi.js/unsafe-eval';
 import {
   createPlayer,
   shouldForwardEvent,

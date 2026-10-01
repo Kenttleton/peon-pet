@@ -36,6 +36,9 @@
 <body>
   <canvas id="c"></canvas>
   <div id="loading"><div class="spinner"></div></div>
-  <script type="module" src="app.mjs"></script>
+  <!-- Bundled by scripts/build-renderer.js (esbuild) from app.mjs + player.mjs
+       + pixi.js — never load app.mjs directly, it has unresolved bundler-only
+       imports (bare 'pixi.js'/'pixi.js/unsafe-eval' specifiers). -->
+  <script type="module" src="dist/app.js"></script>
 </body>
 </html>
