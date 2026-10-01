@@ -2,8 +2,13 @@
 <html>
 <head>
   <meta charset="UTF-8">
+  <!-- img-src allows data: so PixiJS's own internal AVIF/WebP support
+       probes (hardcoded base64 test images, assets/detections/parsers/
+       detectAvif.mjs and detectWebp.mjs) don't get silently blocked —
+       harmless either way (Pixi treats a blocked probe as "unsupported"
+       and falls back to PNG), but this avoids the console warning. -->
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self' peon-asset:; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self' peon-asset:;">
+        content="default-src 'self' peon-asset:; script-src 'self'; style-src 'unsafe-inline'; img-src 'self' data: peon-asset:; connect-src 'self' peon-asset:;">
   <style>
     * { margin: 0; padding: 0; }
     html, body { width: 100vw; height: 100vh; overflow: hidden; background: transparent; }

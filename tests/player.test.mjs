@@ -13,6 +13,7 @@ import {
   computeDotLayout,
   hitTestDot,
   buildTooltipHtml,
+  createPixiTextureLoader,
 } from '../renderer/player.mjs';
 
 describe('advanceFrames', () => {
@@ -633,5 +634,55 @@ describe('buildTooltipHtml', () => {
     ];
     const html = buildTooltipHtml(sessions, -1, { hot: 'g', warm: 'y', off: 'gray' });
     expect(html).toBe('1/2 sessions');
+  });
+});
+
+describe('createPixiTextureLoader', () => {
+  function makeFakePixiAssets(resolvedBase) {
+    return {
+      Assets: { load: jest.fn().mockResolvedValue(resolvedBase) },
+      Texture: jest.fn().mockImplementation((opts) => ({ __fakeDerivedTexture: true, ...opts })),
+      Rectangle: jest.fn().mockImplementation((x, y, width, height) => ({ x, y, width, height })),
+    };
+  }
+
+  test('requests Assets.load with an explicit parser, not relying on the URL\'s (nonexistent) file extension — regression: peon-asset:// URLs are opaque tokens with no extension, so PixiJS\'s default extension-sniffing silently fails to find a parser for them', async () => {
+    const fakePixi = makeFakePixiAssets({ width: 100, height: 100, source: {} });
+    const loader = createPixiTextureLoader(fakePixi);
+    const caches = createTextureCaches();
+
+    await loader.loadFrame(caches, 'peon-asset://asset/0', 0, 1, 1, 0);
+
+    expect(fakePixi.Assets.load).toHaveBeenCalledWith({ src: 'peon-asset://asset/0', parser: 'loadTextures' });
+  });
+
+  test('throws a clear error instead of crashing on a null/sourceless base texture (defends against Assets.load silently failing)', async () => {
+    const fakePixi = makeFakePixiAssets(null);
+    const loader = createPixiTextureLoader(fakePixi);
+    const caches = createTextureCaches();
+
+    await expect(loader.loadFrame(caches, 'peon-asset://asset/0', 0, 1, 1, 0)).rejects.toThrow(/Failed to load texture/);
+  });
+
+  test('caches the base texture by url and only calls Assets.load once for repeated frames of the same atlas', async () => {
+    const fakePixi = makeFakePixiAssets({ width: 100, height: 100, source: {} });
+    const loader = createPixiTextureLoader(fakePixi);
+    const caches = createTextureCaches();
+
+    await loader.loadFrame(caches, 'peon-asset://asset/0', 0, 1, 4, 0);
+    await loader.loadFrame(caches, 'peon-asset://asset/0', 0, 1, 4, 1);
+
+    expect(fakePixi.Assets.load).toHaveBeenCalledTimes(1);
+  });
+
+  test('sets nearest-neighbor scale mode on the loaded base texture source (pixel-art, no blur)', async () => {
+    const source = {};
+    const fakePixi = makeFakePixiAssets({ width: 100, height: 100, source });
+    const loader = createPixiTextureLoader(fakePixi);
+    const caches = createTextureCaches();
+
+    await loader.loadFrame(caches, 'peon-asset://asset/0', 0, 1, 1, 0);
+
+    expect(source.scaleMode).toBe('nearest');
   });
 });

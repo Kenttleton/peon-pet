@@ -149,7 +149,20 @@ export function createPixiTextureLoader(PIXI) {
 
       let base = caches.base.get(url);
       if (!base) {
-        base = await PIXI.Assets.load(url);
+        // peon-asset:// URLs are opaque tokens with no file extension
+        // (main.js's toAssetUrl mints 'peon-asset://asset/<token>', by
+        // design — see lib/asset-headers.js's Cache-Control invariant).
+        // PIXI.Assets.load() normally infers which parser to use from the
+        // URL's extension (loadTextures.test() checks path.extname against
+        // .png/.jpg/etc) and silently fails to load ("we don't know how to
+        // parse it") when there isn't one. Explicitly naming the parser
+        // bypasses that extension sniffing entirely — every CEAP asset is
+        // a PNG (lib/ceap-manifest.js's pngSizeOf), so this is always
+        // correct, not a guess.
+        base = await PIXI.Assets.load({ src: url, parser: 'loadTextures' });
+        if (!base || !base.source) {
+          throw new Error(`[peon-pet] Failed to load texture: ${url}`);
+        }
         base.source.scaleMode = 'nearest';
         caches.base.set(url, base);
       }
