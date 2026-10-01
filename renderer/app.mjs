@@ -22,6 +22,16 @@ import {
   createPixiTextureLoader,
 } from './player.mjs';
 
+// PixiJS's default texture loader offloads createImageBitmap() decoding to
+// a Web Worker, spun up from a `blob:` URL (checkImageBitmap.worker.mjs).
+// This app's CSP has no worker-src, so it falls back to script-src 'self',
+// which blocks `new Worker(blob:...)` outright — the worker constructor
+// throws synchronously, rejecting every texture load. createImageBitmap()
+// itself isn't CSP-gated; only the worker wrapper around it is, so turning
+// preferWorkers off keeps the fast native bitmap decode path and only
+// drops the (here, impossible) off-main-thread optimization.
+PIXI.Assets.setPreferences({ preferWorkers: false });
+
 const canvas = document.getElementById('c');
 const app = new PIXI.Application();
 await app.init({ canvas, backgroundAlpha: 0, antialias: false, resolution: window.devicePixelRatio || 1 });
