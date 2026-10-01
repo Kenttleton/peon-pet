@@ -217,6 +217,60 @@ function makeFakePixiApp() {
   };
 }
 
+// A fake display object that behaves enough like a PIXI.Sprite for
+// createPlayer's lifecycle to exercise real create/destroy paths —
+// confirmed destroyed, confirmed on/off stage — without a real Pixi
+// Container, which previously let plain {__kind, url} objects get pushed
+// onto a real stage and crash (`child.emit is not a function`).
+function makeFakeDisplayFactory() {
+  const created = [];
+  return {
+    created,
+    createSprite() {
+      const sprite = {
+        __isFakeSprite: true,
+        destroyed: false,
+        texture: null,
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+        destroy() { this.destroyed = true; },
+      };
+      created.push(sprite);
+      return sprite;
+    },
+  };
+}
+
+// A fake texture loader that resolves immediately (no real network/GPU),
+// tracking every (url, row, rows, frames, frameIndex) it was asked to
+// slice, so tests can assert on what got requested without a real Pixi
+// Assets/Texture pipeline.
+function makeFakeTextureLoader() {
+  const requests = [];
+  return {
+    requests,
+    async loadFrame(caches, url, row, rows, frames, frameIndex) {
+      requests.push({ url, row, rows, frames, frameIndex });
+      const key = `${url}:${row}:${rows}:${frameIndex}`;
+      const cached = caches.derived.get(key);
+      if (cached) return cached;
+      const texture = { __fakeTexture: true, url, row, rows, frameIndex };
+      caches.derived.set(key, texture);
+      return texture;
+    },
+  };
+}
+
+function makePlayerDeps(overrides = {}) {
+  return {
+    displayFactory: makeFakeDisplayFactory(),
+    textureLoader: makeFakeTextureLoader(),
+    ...overrides,
+  };
+}
+
 function makeConfig(overrides = {}) {
   return {
     subAgent: false,
@@ -230,126 +284,253 @@ function makeConfig(overrides = {}) {
   };
 }
 
+// Advances real (non-fake) timers/microtasks enough for a createPlayer
+// await chain (initScene/playAnim -> applyFrame -> textureLoader.loadFrame)
+// to settle, since the fake texture loader is async even though it
+// resolves immediately.
+async function flushAsync() {
+  await new Promise((resolve) => setImmediate(resolve));
+}
+
 describe('createPlayer', () => {
-  test('initScene sets isSubAgent from config.subAgent', () => {
-    const player = createPlayer(makeFakePixiApp());
-    player.initScene(makeConfig({ subAgent: true }));
+  test('initScene sets isSubAgent from config.subAgent', async () => {
+    const player = createPlayer(makeFakePixiApp(), makePlayerDeps());
+    await player.initScene(makeConfig({ subAgent: true }));
     expect(player.isSubAgent).toBe(true);
 
-    player.initScene(makeConfig({ subAgent: false }));
+    await player.initScene(makeConfig({ subAgent: false }));
     expect(player.isSubAgent).toBe(false);
   });
 
-  test('initScene defaults isSubAgent to false when config.subAgent is absent', () => {
-    const player = createPlayer(makeFakePixiApp());
+  test('initScene defaults isSubAgent to false when config.subAgent is absent', async () => {
+    const player = createPlayer(makeFakePixiApp(), makePlayerDeps());
     const cfg = makeConfig();
     delete cfg.subAgent;
-    player.initScene(cfg);
+    await player.initScene(cfg);
     expect(player.isSubAgent).toBe(false);
   });
 
-  test('initScene clears both texture caches on every call (uniform hot-reload teardown)', () => {
-    const player = createPlayer(makeFakePixiApp());
-    player.initScene(makeConfig());
+  test('initScene clears both texture caches on every call (uniform hot-reload teardown) — stale entries from the prior pack never survive', async () => {
+    const player = createPlayer(makeFakePixiApp(), makePlayerDeps());
+    await player.initScene(makeConfig());
     // simulate the base/derived caches having entries from a prior pack
     player._caches.base.set('peon-asset://asset/0', {});
     player._caches.derived.set('peon-asset://asset/0:0:1:0', {});
-    player.initScene(makeConfig({ animations: { sleeping: [{ frames: 1, fps: 1, loop: true, displayWidth: 32, displayHeight: 32, url: 'peon-asset://asset/9' }] } }));
-    expect(player._caches.base.size).toBe(0);
-    expect(player._caches.derived.size).toBe(0);
+    await player.initScene(makeConfig({ animations: { sleeping: [{ frames: 1, fps: 1, loop: true, displayWidth: 32, displayHeight: 32, url: 'peon-asset://asset/9' }] } }));
+    // the stale prior-pack entries must be gone...
+    expect(player._caches.base.has('peon-asset://asset/0')).toBe(false);
+    expect(player._caches.derived.has('peon-asset://asset/0:0:1:0')).toBe(false);
+    // ...even though the new pack's own sleeping-frame-0 load repopulates the
+    // derived-frame cache with its own entry (initScene plays sleeping
+    // immediately; the fake textureLoader only populates `derived`, mirroring
+    // that the real loader's `base` entry is an implementation detail of
+    // createPixiTextureLoader, not something every textureLoader must use).
+    expect(player._caches.derived.has('peon-asset://asset/9:0:1:0')).toBe(true);
   });
 
-  test('initScene removes every previously-added display object from the stage (no stale sprite/bg/border/dots survive a pack switch)', () => {
+  test('initScene creates and adds a real main sprite to the stage (Critical fix: the pet must actually render)', async () => {
     const pixiApp = makeFakePixiApp();
-    const player = createPlayer(pixiApp);
-    player.initScene(makeConfig({
-      assets: { bg: { url: 'peon-asset://asset/1', displayWidth: 64, displayHeight: 64 } },
+    const player = createPlayer(pixiApp, makePlayerDeps());
+    await player.initScene(makeConfig());
+    expect(player.mainSprite).not.toBeNull();
+    expect(player.mainSprite.__isFakeSprite).toBe(true);
+    expect(pixiApp.stage.children).toContain(player.mainSprite);
+  });
+
+  test('initScene creates bg/border sprites only when the config declares them, and never leaves a plain non-display object on the stage', async () => {
+    const pixiApp = makeFakePixiApp();
+    const player = createPlayer(pixiApp, makePlayerDeps());
+    await player.initScene(makeConfig({
+      assets: { bg: { url: 'peon-asset://asset/1' }, borders: { url: 'peon-asset://asset/2' } },
     }));
-    const firstInitObjects = [...pixiApp.stage.children];
-    expect(firstInitObjects.length).toBeGreaterThan(0);
-
-    player.initScene(makeConfig()); // second pack, no bg this time
-    // none of the exact objects added during the first initScene may still be on stage
-    const stale = pixiApp.stage.children.filter((c) => firstInitObjects.includes(c));
-    expect(stale.length).toBe(0);
+    expect(player.bgSprite).not.toBeNull();
+    expect(player.borderSprite).not.toBeNull();
+    for (const child of pixiApp.stage.children) {
+      // every object ever pushed onto the real stage must be a real display
+      // object our fake factory created, never a plain {__kind, url} record
+      // (that shape crashes a real PIXI.Container.addChild).
+      expect(child.__isFakeSprite).toBe(true);
+    }
   });
 
-  test('playAnim("sleeping") after initScene does not throw and resets frame state', () => {
-    const player = createPlayer(makeFakePixiApp());
-    player.initScene(makeConfig());
-    expect(() => player.playAnim('sleeping')).not.toThrow();
+  test('initScene destroys every previously-created sprite (main/bg/border) on a pack switch (uniform teardown)', async () => {
+    const pixiApp = makeFakePixiApp();
+    const player = createPlayer(pixiApp, makePlayerDeps());
+    await player.initScene(makeConfig({ assets: { bg: { url: 'peon-asset://asset/1' } } }));
+    const firstMain = player.mainSprite;
+    const firstBg = player.bgSprite;
+
+    await player.initScene(makeConfig()); // second pack, no bg this time
+    expect(firstMain.destroyed).toBe(true);
+    expect(firstBg.destroyed).toBe(true);
+    expect(pixiApp.stage.children).not.toContain(firstMain);
+    expect(pixiApp.stage.children).not.toContain(firstBg);
   });
 
-  test('sub-agent config never auto-sleeps via tick-driven idle check', () => {
-    const player = createPlayer(makeFakePixiApp());
-    player.initScene(makeConfig({ subAgent: true }));
-    player.playAnim('typing');
+  test('initScene loads and applies a texture for the initial sleeping frame', async () => {
+    const player = createPlayer(makeFakePixiApp(), makePlayerDeps());
+    await player.initScene(makeConfig());
+    expect(player.mainSprite.texture).not.toBeNull();
+    expect(player.mainSprite.texture.__fakeTexture).toBe(true);
+  });
+
+  test('playAnim("sleeping") after initScene does not throw and resets frame state', async () => {
+    const player = createPlayer(makeFakePixiApp(), makePlayerDeps());
+    await player.initScene(makeConfig());
+    await expect(player.playAnim('sleeping')).resolves.not.toThrow();
+  });
+
+  test('playAnim for a category the pack does not declare has no visible effect (CEAP category fallback) — current animation keeps playing', async () => {
+    const player = createPlayer(makeFakePixiApp(), makePlayerDeps());
+    await player.initScene(makeConfig());
+    await player.playAnim('typing');
+    expect(player.getCurrentAnim()).toBe('typing');
+
+    await player.playAnim('annoyed'); // not declared in makeConfig()'s animations
+    expect(player.getCurrentAnim()).toBe('typing'); // unchanged, not stuck/frozen on a null variant
+    expect(() => player.tick(50)).not.toThrow();
+  });
+
+  test('non-looping reaction plays exactly `loops` total passes, not loops+1 (regression: a prior version played one extra loop)', async () => {
+    const player = createPlayer(makeFakePixiApp(), makePlayerDeps());
+    await player.initScene(makeConfig());
+    await player.playAnim('typing'); // frames:4, fps:20, loops:3
+
+    // 3 total passes of 4 frames = 12 frame advances to reach the final held frame.
+    // A 4th extra pass (the bug) would need 16 advances instead.
+    for (let i = 0; i < 12; i++) player.tick(50);
+    await flushAsync();
+    expect(player.mainSprite.texture.frameIndex).toBe(3); // held on last frame (index 3 of 4)
+
+    // One more full pass worth of ticks must NOT restart the animation if the
+    // hold has already been reached — frame should stay at the last index.
+    player.tick(50);
+    await flushAsync();
+    expect(player.mainSprite.texture.frameIndex).toBe(3);
+  });
+
+  test('sub-agent config never auto-sleeps via tick-driven idle check', async () => {
+    const player = createPlayer(makeFakePixiApp(), makePlayerDeps());
+    await player.initScene(makeConfig({ subAgent: true }));
+    await player.playAnim('typing');
     expect(player.shouldAutoSleepNow()).toBe(false);
   });
 
-  test('main pet with no active session auto-sleeps via tick-driven idle check', () => {
-    const player = createPlayer(makeFakePixiApp());
-    player.initScene(makeConfig({ subAgent: false }));
+  test('main pet with no active session auto-sleeps via tick-driven idle check', async () => {
+    const player = createPlayer(makeFakePixiApp(), makePlayerDeps());
+    await player.initScene(makeConfig({ subAgent: false }));
     player.setAnySessionActive(false);
     expect(player.shouldAutoSleepNow()).toBe(true);
   });
 
-  test('tick with zero deltaMS does not throw and does not advance frames', () => {
-    const player = createPlayer(makeFakePixiApp());
-    player.initScene(makeConfig());
-    player.playAnim('sleeping');
+  test('tick with zero deltaMS does not throw and does not advance frames', async () => {
+    const player = createPlayer(makeFakePixiApp(), makePlayerDeps());
+    await player.initScene(makeConfig());
+    await player.playAnim('sleeping');
     expect(() => player.tick(0)).not.toThrow();
   });
 
-  test('updateDots with sessions array does not throw for sub-agent (dots suppressed) or main pet', () => {
-    const subPlayer = createPlayer(makeFakePixiApp());
-    subPlayer.initScene(makeConfig({ subAgent: true }));
+  test('updateDots with sessions array does not throw for sub-agent (dots suppressed) or main pet', async () => {
+    const subPlayer = createPlayer(makeFakePixiApp(), makePlayerDeps());
+    await subPlayer.initScene(makeConfig({ subAgent: true }));
     expect(() => subPlayer.updateDots([{ id: 'a', hot: true, warm: false }])).not.toThrow();
 
-    const mainPlayer = createPlayer(makeFakePixiApp());
-    mainPlayer.initScene(makeConfig({ subAgent: false }));
+    const mainPlayer = createPlayer(makeFakePixiApp(), makePlayerDeps());
+    await mainPlayer.initScene(makeConfig({ subAgent: false }));
     expect(() => mainPlayer.updateDots([{ id: 'a', hot: true, warm: false }])).not.toThrow();
   });
 
-  test('non-looping reaction holds on its last frame, then schedules postReactionAnim via the injected timer (not synchronously)', () => {
+  test('ANIM_FLASH-mapped events (waking/alarmed/celebrate/annoyed) trigger a flash; others do not (regression: a prior version dropped this entirely)', async () => {
+    const player = createPlayer(makeFakePixiApp(), makePlayerDeps());
+    await player.initScene(makeConfig({
+      animations: {
+        sleeping: [{ frames: 1, fps: 1, loop: true, url: 'x' }],
+        alarmed: [{ frames: 1, fps: 1, loop: false, loops: 1, url: 'x' }],
+        typing: [{ frames: 1, fps: 1, loop: false, loops: 1, url: 'x' }],
+      },
+    }));
+    await player.playAnim('alarmed');
+    expect(player.getFlashIntensity()).toBeGreaterThan(0);
+
+    await player.initScene(makeConfig({
+      animations: {
+        sleeping: [{ frames: 1, fps: 1, loop: true, url: 'x' }],
+        typing: [{ frames: 1, fps: 1, loop: false, loops: 1, url: 'x' }],
+      },
+    }));
+    await player.playAnim('typing'); // not in ANIM_FLASH
+    expect(player.getFlashIntensity()).toBe(0);
+  });
+
+  test('non-looping reaction holds on its last frame, then schedules postReactionAnim via the injected timer (not synchronously)', async () => {
     const scheduled = [];
     const fakeTimers = {
       setTimeout: (fn, ms) => { scheduled.push({ fn, ms }); return scheduled.length; },
       clearTimeout: () => {},
     };
-    const player = createPlayer(makeFakePixiApp(), fakeTimers);
-    player.initScene(makeConfig({ subAgent: false }));
+    const player = createPlayer(makeFakePixiApp(), makePlayerDeps({ timers: fakeTimers }));
+    await player.initScene(makeConfig({ subAgent: false }));
     player.setAnySessionActive(false);
-    player.playAnim('typing'); // 4 frames, fps 20, loop: false, loops: 3 -> 3 full replays before holding
+    await player.playAnim('typing'); // 4 frames, fps 20, loop: false, loops: 3 -> 3 total passes before holding
 
     // Drive enough ticks to exhaust all loops and land on the last frame hold.
-    // 4 frames * (3 loops + 1 final pass) = 16 frame advances; each tick(50ms) advances exactly 1
+    // 4 frames * 3 loops = 12 frame advances; each tick(50ms) advances exactly 1
     // frame at 20fps (frameDuration 0.05s) — chosen to stay under tick()'s 0.1s delta clamp, unlike
     // 8fps (frameDuration 0.125s > clamp), which would advance slower than 1 frame per tick.
-    for (let i = 0; i < 16; i++) player.tick(50);
+    for (let i = 0; i < 12; i++) player.tick(50);
 
     expect(scheduled.length).toBe(1);
     expect(scheduled[0].ms).toBe(300);
 
     // The scheduled callback hasn't fired yet (fake timer captured, not invoked) -> still holding, not yet reset.
-    scheduled[0].fn(); // simulate the timer firing
+    await scheduled[0].fn(); // simulate the timer firing
     // After firing, postReactionAnim(false, false) === 'sleeping' per Task 4's table.
     expect(() => player.tick(1)).not.toThrow();
   });
 
-  test('initScene cancels any pending reaction-hold timer from the previous pack (no stale callback fires after a pack switch)', () => {
+  test('initScene cancels any pending reaction-hold timer from the previous pack (no stale callback fires after a pack switch)', async () => {
     let cancelled = false;
     const fakeTimers = {
       setTimeout: () => 'handle-1',
       clearTimeout: (handle) => { if (handle === 'handle-1') cancelled = true; },
     };
-    const player = createPlayer(makeFakePixiApp(), fakeTimers);
-    player.initScene(makeConfig());
-    player.playAnim('typing');
-    for (let i = 0; i < 16; i++) player.tick(50); // schedules the hold timer
+    const player = createPlayer(makeFakePixiApp(), makePlayerDeps({ timers: fakeTimers }));
+    await player.initScene(makeConfig());
+    await player.playAnim('typing');
+    for (let i = 0; i < 12; i++) player.tick(50); // schedules the hold timer
 
-    player.initScene(makeConfig()); // pack switch while a reaction-hold timer is pending
+    await player.initScene(makeConfig()); // pack switch while a reaction-hold timer is pending
     expect(cancelled).toBe(true);
+  });
+
+  test('a slow texture load from a superseded pack never overwrites the current pack\'s sprite (stale-frame-after-rapid-pack-switch guard)', async () => {
+    const pixiApp = makeFakePixiApp();
+    let resolveSlowLoad;
+    const slowFirstLoader = {
+      requests: [],
+      loadFrame(caches, url) {
+        this.requests.push(url);
+        if (url === 'slow-pack') {
+          return new Promise((resolve) => { resolveSlowLoad = () => resolve({ __fakeTexture: true, url: 'slow-pack' }); });
+        }
+        return Promise.resolve({ __fakeTexture: true, url });
+      },
+    };
+    const player = createPlayer(pixiApp, makePlayerDeps({ textureLoader: slowFirstLoader }));
+
+    const firstInit = player.initScene(makeConfig({
+      animations: { sleeping: [{ frames: 1, fps: 1, loop: true, url: 'slow-pack' }] },
+    })); // intentionally not awaited yet — simulates a slow load in flight
+    await player.initScene(makeConfig({
+      animations: { sleeping: [{ frames: 1, fps: 1, loop: true, url: 'fast-pack' }] },
+    })); // second pack switch completes first
+
+    expect(player.mainSprite.texture.url).toBe('fast-pack');
+    resolveSlowLoad();
+    await firstInit;
+    await flushAsync();
+    // the now-superseded first pack's slow load must NOT clobber the second pack's sprite
+    expect(player.mainSprite.texture.url).toBe('fast-pack');
   });
 });
 
@@ -358,10 +539,13 @@ describe('computeDotLayout', () => {
     expect(computeDotLayout([], 200)).toEqual([]);
   });
 
-  test('single session is centered horizontally', () => {
+  test('single session is centered horizontally in canvas-pixel space (x = winWidth/2, not 0)', () => {
     const layout = computeDotLayout([{ hot: true, warm: false }], 200);
     expect(layout).toHaveLength(1);
-    expect(layout[0].x).toBeCloseTo(0);
+    // canvas-pixel space: the window's horizontal center is winWidth/2, not 0
+    // (0 would be centered-origin space, which app.js no longer uses — see
+    // the Critical coordinate-space bug this replaces).
+    expect(layout[0].x).toBeCloseTo(100);
   });
 
   test('positions scale with window width relative to the 200px reference width', () => {
@@ -391,9 +575,19 @@ describe('hitTestDot', () => {
     expect(hitTestDot(0, 0, [], 200)).toBe(-1);
   });
 
-  test('returns the index of the dot under the point', () => {
+  test('returns the index of the dot under the point, using the exact canvas-pixel coordinates computeDotLayout produced (regression: a prior version required callers to add winWidth/2 themselves, which app.js forgot to do)', () => {
     const layout = computeDotLayout([{ hot: true, warm: false }], 200);
     expect(hitTestDot(layout[0].x, layout[0].y, layout, 200)).toBe(0);
+  });
+
+  test('hit-tests correctly at a non-centered, asymmetric window width where centered-origin and canvas-pixel space would disagree', () => {
+    const layout = computeDotLayout([{ hot: true, warm: false }], 300);
+    // At winWidth=300, a single dot's canvas-pixel x is 150 (winWidth/2).
+    // A caller mistakenly using centered-origin space (x=0) would miss
+    // this hit entirely; this test fails under that bug.
+    expect(layout[0].x).toBeCloseTo(150);
+    expect(hitTestDot(150, layout[0].y, layout, 300)).toBe(0);
+    expect(hitTestDot(0, layout[0].y, layout, 300)).toBe(-1);
   });
 
   test('returns -1 when the point is far from every dot', () => {

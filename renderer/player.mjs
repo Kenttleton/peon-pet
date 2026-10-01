@@ -94,27 +94,122 @@ export function shouldForwardEvent(isSubAgent, anim) {
   return !isSubAgent || anim === 'waking';
 }
 
-const REACTION_LOOPS = 3;
+/**
+ * Picks a variant for `animName` from `animConfig`, applying CEAP's
+ * no-immediate-repeat rule when a category has more than one variant
+ * (docs/ceap-spec.md#variant-selection). Mirrors renderer/app.js:340-348's
+ * pickVariant. A category the pack doesn't declare returns null — callers
+ * must treat that as "no visible effect", never a substitute (CEAP's
+ * category-fallback rule, renderer/app.js:456-459).
+ *
+ * @param {Record<string, Array<object>>} animConfig
+ * @param {string} animName
+ * @param {number|undefined} lastIndex - the index played last time for this category, or undefined
+ * @returns {{variant: object, index: number} | null}
+ */
+export function pickVariant(animConfig, animName, lastIndex) {
+  const variants = animConfig[animName];
+  if (!variants || variants.length === 0) return null;
+  if (variants.length === 1) return { variant: variants[0], index: 0 };
+  const candidates = variants.map((_, i) => i).filter((i) => i !== lastIndex);
+  const index = candidates[Math.floor(Math.random() * candidates.length)];
+  return { variant: variants[index], index };
+}
+
+const REACTION_LOOPS = 3; // play reaction animations 3x before sleeping, matching renderer/app.js:328
 const REACTION_HOLD_MS = 300; // matches renderer/app.js:724-737's setTimeout delay on the last frame of a reaction
+
+/** Mirrors renderer/app.js:309-314's ANIM_FLASH map (color + intensity + decay per event). */
+const ANIM_FLASH = {
+  waking: { r: 0.4, g: 0.8, b: 1.0, intensity: 0.3, decay: 2.0 },
+  alarmed: { r: 1.0, g: 0.1, b: 0.1, intensity: 0.5, decay: 2.5 },
+  celebrate: { r: 1.0, g: 0.8, b: 0.0, intensity: 0.5, decay: 2.0 },
+  annoyed: { r: 0.8, g: 0.4, b: 0.0, intensity: 0.3, decay: 2.0 },
+};
+
+/**
+ * Default texture-loading/slicing strategy backed by real PixiJS: loads
+ * each unique base texture once via PIXI.Assets, slices per-frame
+ * PIXI.Texture regions from computeFrameRect via PIXI.Rectangle, and
+ * caches both (keyed as createTextureCaches/derivedFrameCacheKey
+ * describe). Overridable via createPlayer's `textureLoader` option so
+ * tests can inject a fake that never touches a real GPU/network.
+ *
+ * @param {object} PIXI - the pixi.js module namespace (injected so this
+ *   file has no top-level pixi.js import — keeps player.mjs loadable in
+ *   Jest without a real PIXI.Assets/texture pipeline when a test instead
+ *   provides its own textureLoader).
+ */
+export function createPixiTextureLoader(PIXI) {
+  return {
+    async loadFrame(caches, url, row, rows, frames, frameIndex) {
+      const key = derivedFrameCacheKey(url, row, rows, frameIndex);
+      const cached = caches.derived.get(key);
+      if (cached) return cached;
+
+      let base = caches.base.get(url);
+      if (!base) {
+        base = await PIXI.Assets.load(url);
+        base.source.scaleMode = 'nearest';
+        caches.base.set(url, base);
+      }
+
+      const rect = computeFrameRect(base.width, base.height, row, rows, frames, frameIndex);
+      const frameTexture = new PIXI.Texture({
+        source: base.source,
+        frame: new PIXI.Rectangle(rect.x, rect.y, rect.width, rect.height),
+      });
+      caches.derived.set(key, frameTexture);
+      return frameTexture;
+    },
+  };
+}
 
 /**
  * Creates a player instance bound to a Pixi-app-like object. The app only
- * needs `{ stage: { addChild, removeChild }, renderer: { resize } }` —
- * real PIXI.Application satisfies this; tests inject a plain fake object
+ * needs `{ stage: { addChild, removeChild } }` for tests — real
+ * PIXI.Application satisfies this; tests inject a plain fake object
  * instead of mocking pixi.js, mirroring lib/window-manager.js's
  * constructor-injected `{ screen }` pattern.
  *
+ * Display-object creation (sprite/bg/border) is itself injected via
+ * `displayFactory`, so tests can verify teardown/lifecycle without a real
+ * Pixi/WebGL context — the default (used by app.mjs) creates real
+ * PIXI.Sprite instances; a test factory returns plain trackable objects.
+ * This is what fixes the Critical bug where a first version of this
+ * player pushed plain `{__kind, url}` objects directly onto a REAL
+ * PIXI.Container's stage, which throws (`child.emit is not a function`)
+ * because PIXI.Container.addChild requires an actual display object.
+ *
  * @param {object} pixiApp - see above for the minimal shape required.
- * @param {{setTimeout?: Function, clearTimeout?: Function}} [timers] - injectable
+ * @param {object} [options]
+ * @param {{setTimeout?: Function, clearTimeout?: Function}} [options.timers] - injectable
  *   timer functions, defaulting to the real globals. Tests pass fakes (e.g.
- *   jest fake timers or a synchronous stub) instead of waiting 300ms per
- *   assertion or mocking global setTimeout.
+ *   a synchronous stub) instead of waiting 300ms per assertion.
+ * @param {{createSprite?: Function, createGraphicsRect?: Function}} [options.displayFactory] -
+ *   `createSprite()` returns a fresh Pixi-like sprite object with a
+ *   settable `.texture`, `.width`, `.height`, `.x`, `.y`. Defaults to a
+ *   factory that throws if used without a real `displayFactory` supplied
+ *   — app.mjs always supplies one backed by `new PIXI.Sprite()`.
+ * @param {{loadFrame: Function}} [options.textureLoader] - see
+ *   createPixiTextureLoader; tests supply a fake that resolves
+ *   synchronously-ish fake texture objects instead of touching the GPU.
  */
-export function createPlayer(pixiApp, timers = {}) {
-  const scheduleTimeout = timers.setTimeout || setTimeout;
-  const cancelTimeout = timers.clearTimeout || clearTimeout;
+export function createPlayer(pixiApp, options = {}) {
+  const scheduleTimeout = options.timers?.setTimeout || setTimeout;
+  const cancelTimeout = options.timers?.clearTimeout || clearTimeout;
+  const createSprite = options.displayFactory?.createSprite || (() => {
+    throw new Error('createPlayer requires options.displayFactory.createSprite to create real display objects');
+  });
+  const textureLoader = options.textureLoader || null;
+  // Called whenever playAnim picks a new variant, with that variant and the
+  // current bg/border assets (if any) — app.js uses this to resize the
+  // window (window.peonBridge.computeWindowSize/resizePet) and position the
+  // bg/border sprites, since window sizing is IPC-driven and out of scope
+  // for player.js per the "no DOM/IPC in player.js" constraint.
+  const onVariantChanged = options.onVariantChanged || (() => {});
+
   const caches = createTextureCaches();
-  let displayObjects = []; // every sprite/bg/border/dot currently on stage, for uniform teardown
   let animConfig = {};
   let currentAnim = 'sleeping';
   let currentVariant = null;
@@ -126,15 +221,40 @@ export function createPlayer(pixiApp, timers = {}) {
   let anySessionActive = false;
   let flashIntensity = 0;
   let particles = [];
+  let lastPlayedIndex = {};
+  let currentSessions = [];
+
+  let mainSprite = null;
+  let bgSprite = null;
+  let borderSprite = null;
+  let bgAsset = null;
+  let borderAsset = null;
+  // Each initScene bumps this; an in-flight loadFrame promise from a
+  // superseded pack checks it before mutating state, so a slow load from
+  // pack N never clobbers pack N+1's already-current sprite after a rapid
+  // pack switch (prevents the exact kind of stale-frame bug the spec's
+  // Review Focus section calls out).
+  let sceneGeneration = 0;
+
+  function destroySprite(sprite) {
+    if (!sprite) return;
+    pixiApp.stage.removeChild(sprite);
+    if (typeof sprite.destroy === 'function') sprite.destroy();
+  }
 
   function clearStage() {
-    for (const obj of displayObjects) {
-      pixiApp.stage.removeChild(obj);
-    }
-    displayObjects = [];
+    destroySprite(mainSprite);
+    destroySprite(bgSprite);
+    destroySprite(borderSprite);
+    mainSprite = null;
+    bgSprite = null;
+    borderSprite = null;
   }
 
   function initScene(config) {
+    sceneGeneration++;
+    const myGeneration = sceneGeneration;
+
     clearStage();
     clearTextureCaches(caches);
     isSubAgent = !!config.subAgent;
@@ -142,41 +262,67 @@ export function createPlayer(pixiApp, timers = {}) {
     currentFrame = 0;
     frameTimer = 0;
     remainingLoops = 0;
+    lastPlayedIndex = {};
     if (pendingIdleHandle) { cancelTimeout(pendingIdleHandle); pendingIdleHandle = null; }
     flashIntensity = 0;
     particles = [];
 
-    if (config.assets && config.assets.bg) {
-      const bg = { __kind: 'bg', url: config.assets.bg.url };
-      displayObjects.push(bg);
-      pixiApp.stage.addChild(bg);
-    }
-    if (config.assets && config.assets.borders) {
-      const border = { __kind: 'border', url: config.assets.borders.url };
-      displayObjects.push(border);
-      pixiApp.stage.addChild(border);
-    }
+    bgAsset = (config.assets && config.assets.bg) || null;
+    borderAsset = (config.assets && config.assets.borders) || null;
 
-    playAnim('sleeping');
+    if (bgAsset) {
+      bgSprite = createSprite();
+      pixiApp.stage.addChild(bgSprite);
+    }
+    if (borderAsset) {
+      borderSprite = createSprite();
+      pixiApp.stage.addChild(borderSprite);
+    }
+    mainSprite = createSprite();
+    pixiApp.stage.addChild(mainSprite);
+
+    return playAnim('sleeping', myGeneration);
   }
 
-  function pickVariant(animName) {
-    const variants = animConfig[animName];
-    if (!variants || variants.length === 0) return null;
-    if (variants.length === 1) return variants[0];
-    return variants[Math.floor(Math.random() * variants.length)];
-  }
+  function playAnim(animName, generationAtCallTime) {
+    const generation = generationAtCallTime ?? sceneGeneration;
+    // CEAP category fallback: a pack that doesn't declare this category
+    // has no visible effect — never substitute a different animation, and
+    // never clear the one already playing (renderer/app.js:456-461).
+    const picked = pickVariant(animConfig, animName, lastPlayedIndex[animName]);
+    if (!picked) return Promise.resolve();
 
-  function playAnim(animName) {
+    if (pendingIdleHandle) { cancelTimeout(pendingIdleHandle); pendingIdleHandle = null; }
     currentAnim = animName;
-    currentVariant = pickVariant(animName);
+    currentVariant = picked.variant;
+    lastPlayedIndex[animName] = picked.index;
     currentFrame = 0;
     frameTimer = 0;
-    remainingLoops = currentVariant && currentVariant.loops != null ? currentVariant.loops : REACTION_LOOPS;
+    const loops = currentVariant.loops != null ? currentVariant.loops : REACTION_LOOPS;
+    remainingLoops = animName !== 'sleeping' ? loops - 1 : 0;
+
+    const flash = ANIM_FLASH[animName];
+    if (flash) triggerFlash(flash.r, flash.g, flash.b, flash.intensity, flash.decay);
+
+    onVariantChanged(currentVariant, { bgAsset, borderAsset });
+    return applyFrame(generation);
+  }
+
+  async function applyFrame(generation) {
+    if (!currentVariant || !mainSprite || !textureLoader) return;
+    const row = currentVariant.row ?? 0;
+    const rows = currentVariant.rows ?? 1;
+    const texture = await textureLoader.loadFrame(caches, currentVariant.url, row, rows, currentVariant.frames, currentFrame);
+    if (generation !== sceneGeneration) return; // superseded by a later initScene/pack switch
+    mainSprite.texture = texture;
   }
 
   function setAnySessionActive(active) {
     anySessionActive = !!active;
+  }
+
+  function getAnySessionActive() {
+    return anySessionActive;
   }
 
   function shouldAutoSleepNow() {
@@ -186,7 +332,7 @@ export function createPlayer(pixiApp, timers = {}) {
   function tick(deltaMS) {
     const deltaSeconds = Math.min(deltaMS / 1000, 0.1);
     if (flashIntensity > 0) {
-      flashIntensity = Math.max(0, flashIntensity - deltaSeconds * 2.0);
+      flashIntensity = Math.max(0, flashIntensity - deltaSeconds * flashDecayRate);
     }
     particles = particles
       .map((p) => stepParticle(p, deltaSeconds))
@@ -211,17 +357,23 @@ export function createPlayer(pixiApp, timers = {}) {
       } else {
         currentFrame = currentVariant.frames - 1;
         if (!pendingIdleHandle) {
+          const generation = sceneGeneration;
           pendingIdleHandle = scheduleTimeout(() => {
             pendingIdleHandle = null;
-            playAnim(postReactionAnim(isSubAgent, anySessionActive));
+            playAnim(postReactionAnim(isSubAgent, anySessionActive), generation);
           }, REACTION_HOLD_MS);
         }
+        return; // don't re-apply the held last frame below; applyFrame already ran for it when it was first reached
       }
     }
+    applyFrame(sceneGeneration);
   }
 
-  function triggerFlash(r, g, b, intensity = 0.6) {
+  let flashDecayRate = 2.0;
+
+  function triggerFlash(r, g, b, intensity = 0.6, decay = 3.0) {
     flashIntensity = intensity;
+    flashDecayRate = decay;
   }
 
   function burstParticles() {
@@ -232,19 +384,20 @@ export function createPlayer(pixiApp, timers = {}) {
     particles = next;
   }
 
-  let currentSessions = [];
-
   function updateDots(sessions) {
     currentSessions = sessions;
-    // Pixi dot-sprite creation/positioning from computeDotLayout's output is
-    // wired by app.js, which owns the actual PIXI.Graphics objects; player.js
-    // only tracks session state here so getCurrentSessions()/hit-testing can
-    // use it regardless of subAgent (sub-agent windows simply never call the
-    // hit-test/tooltip path, since app.js never wires their hover listeners).
   }
 
   function getCurrentSessions() {
     return currentSessions;
+  }
+
+  function getCurrentAnim() {
+    return currentAnim;
+  }
+
+  function getFlashIntensity() {
+    return flashIntensity;
   }
 
   return {
@@ -253,11 +406,17 @@ export function createPlayer(pixiApp, timers = {}) {
     tick,
     updateDots,
     getCurrentSessions,
+    getCurrentAnim,
+    getFlashIntensity,
     triggerFlash,
     burstParticles,
     setAnySessionActive,
+    getAnySessionActive,
     shouldAutoSleepNow,
     get isSubAgent() { return isSubAgent; },
+    get bgSprite() { return bgSprite; },
+    get borderSprite() { return borderSprite; },
+    get mainSprite() { return mainSprite; },
     _caches: caches,
   };
 }
@@ -271,12 +430,20 @@ const DOT_TOP_PADDING_BASE = 12;
 const DOT_REFERENCE_WIDTH = 200; // window width these base constants were tuned for
 
 /**
- * Lays out up to MAX_DOTS session dots, centered horizontally, scaled by
- * how far winWidth has grown/shrunk from the 200px reference width the
- * base constants were tuned for. Mirrors renderer/app.js's updateDots
- * (lines 215-241) and hitTestDots (lines 486-502) positioning math, but as
- * a pure function returning dot centers instead of mutating Pixi/Three
- * objects directly — app.js positions its own dot sprites from this.
+ * Lays out up to MAX_DOTS session dots in CANVAS-PIXEL space (origin
+ * top-left, same space as PointerEvent.offsetX/offsetY and PIXI display
+ * object positions) — not centered-origin space. Returning canvas-pixel
+ * coordinates directly means the same `x`/`y` values feed both rendering
+ * (app.js positions dot sprites from this) and hit-testing (hitTestDot
+ * below), so the two paths can never disagree about which coordinate
+ * space they're in. The original renderer/app.js had this exact bug: its
+ * Three.js scene used centered-origin coordinates for rendering while its
+ * canvas-pixel hit-testing had to manually add `+ currentWinW / 2` to
+ * compensate (app.js:496) — a seam a Pixi rewrite doesn't need to carry
+ * forward, since Pixi's own coordinate space is canvas-pixel already.
+ *
+ * Mirrors renderer/app.js's updateDots (lines 215-241) and hitTestDots
+ * (lines 486-502) positioning math otherwise unchanged.
  *
  * @param {Array<{hot: boolean, warm: boolean}>} sessions
  * @param {number} winWidth
@@ -288,7 +455,7 @@ export function computeDotLayout(sessions, winWidth) {
   const dotGap = DOT_GAP_BASE * scaleFactor;
   const count = Math.min(sessions.length, MAX_DOTS);
   const totalWidth = count * dotSize + Math.max(0, count - 1) * dotGap;
-  const startX = -totalWidth / 2 + dotSize / 2;
+  const startX = winWidth / 2 - totalWidth / 2 + dotSize / 2;
   const y = DOT_TOP_PADDING_BASE * scaleFactor;
 
   const layout = [];
@@ -306,7 +473,10 @@ export function computeDotLayout(sessions, winWidth) {
 /**
  * Finds which dot (if any) contains point (px, py), using a hit radius
  * slightly wider than the visual dot for easier hover (mirrors
- * renderer/app.js:486-502's hitTestDots).
+ * renderer/app.js:486-502's hitTestDots). `px`/`py` and `dotLayout`
+ * entries must both be in canvas-pixel space — computeDotLayout's output
+ * already is, so callers pass PointerEvent.offsetX/offsetY directly with
+ * no extra coordinate conversion.
  *
  * @param {number} px
  * @param {number} py
