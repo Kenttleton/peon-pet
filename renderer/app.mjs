@@ -68,32 +68,45 @@ function onVariantChanged(variant, { bgAsset, borderAsset }) {
   });
   const winW = Math.round(winSize.width);
   const winH = Math.round(winSize.height);
-  // currentWinHeight/currentWinWidth are CSS-pixel values (what resize()
-  // takes); app.renderer.width/height report DEVICE pixels (the actual
-  // backing-buffer size, winW * resolution) per PixiJS's own doc comment
-  // ("actual number of pixels in the canvas") — comparing winH against
-  // that directly would almost always be false whenever resolution != 1,
-  // making this guard never skip and re-run the resize/reposition logic
-  // on every single playAnim call needlessly.
-  if (winW === currentWinWidth && winH === currentWinHeight) return;
+  const sizeChanged = winW !== currentWinWidth || winH !== currentWinHeight;
   currentWinWidth = winW;
   currentWinHeight = winH;
 
-  window.peonBridge.resizePet({ width: winW, height: winH });
-  document.documentElement.style.width = `${winW}px`;
-  document.documentElement.style.height = `${winH}px`;
-  document.body.style.width = `${winW}px`;
-  document.body.style.height = `${winH}px`;
-  // PIXI.Renderer#resize only resizes the backing drawing buffer (to
-  // winW/winH * resolution device pixels) — unlike Three.js's
-  // WebGLRenderer#setSize (the previous engine), it does NOT set the
-  // canvas element's CSS box size. Without this, the canvas displays at
-  // its intrinsic device-pixel dimensions as a CSS size (e.g. 466x458
-  // instead of 233x229 at resolution:2), showing only an unscaled corner
-  // of the composited scene instead of the whole thing scaled to fit.
-  canvas.style.width = `${winW}px`;
-  canvas.style.height = `${winH}px`;
-  app.renderer.resize(winW, winH);
+  // Window/canvas resize and OS-level resizePet are the only things gated
+  // on an actual size change — everything below (sprite/bg/border
+  // positioning, dot redraw) must run on every variant change regardless,
+  // since a new PIXI.Sprite is created per initScene and starts with no
+  // width/height/position at all; skipping this when the size happens to
+  // match the previous variant's left every non-first category (e.g. an
+  // atlas pack where every row shares one frame size, such as orc's
+  // sleeping/waking/typing/alarmed/celebrate/annoyed) with a correctly
+  // positioned sprite ONLY for the first-ever variant played, then frozen
+  // — this is the bug behind "renders fine at first, then breaks": the
+  // border/bg/main sprite's position/size was set once on the very first
+  // onVariantChanged call and never updated again, so a resize_pet "did
+  // something" 1-3 seconds later (driven by session polling, which plays
+  // 'typing' as soon as any tracked session is hot — see main.js's
+  // sendSessionUpdate/EVENT_TO_ANIM) requested the OS window at an
+  // unchanged size, early-returned, and froze the visual state at
+  // whatever generation count/texture mainSprite's animation happened to
+  // land on, decoupled from its now-stale position/size.
+  if (sizeChanged) {
+    window.peonBridge.resizePet({ width: winW, height: winH });
+    document.documentElement.style.width = `${winW}px`;
+    document.documentElement.style.height = `${winH}px`;
+    document.body.style.width = `${winW}px`;
+    document.body.style.height = `${winH}px`;
+    // PIXI.Renderer#resize only resizes the backing drawing buffer (to
+    // winW/winH * resolution device pixels) — unlike Three.js's
+    // WebGLRenderer#setSize (the previous engine), it does NOT set the
+    // canvas element's CSS box size. Without this, the canvas displays at
+    // its intrinsic device-pixel dimensions as a CSS size (e.g. 466x458
+    // instead of 233x229 at resolution:2), showing only an unscaled corner
+    // of the composited scene instead of the whole thing scaled to fit.
+    canvas.style.width = `${winW}px`;
+    canvas.style.height = `${winH}px`;
+    app.renderer.resize(winW, winH);
+  }
 
   const main = player.mainSprite;
   if (main) {
