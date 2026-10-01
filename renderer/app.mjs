@@ -43,6 +43,7 @@ const DOT_COLOR_DEFAULTS = Object.freeze({
 });
 let dotColors = { ...DOT_COLOR_DEFAULTS };
 let currentWinWidth = 200;
+let currentWinHeight = 200;
 let currentScale = 1;
 let currentBorderMargin = { x: 0, y: 0 };
 
@@ -67,14 +68,31 @@ function onVariantChanged(variant, { bgAsset, borderAsset }) {
   });
   const winW = Math.round(winSize.width);
   const winH = Math.round(winSize.height);
-  if (winW === currentWinWidth && winH === app.renderer.height) return;
+  // currentWinHeight/currentWinWidth are CSS-pixel values (what resize()
+  // takes); app.renderer.width/height report DEVICE pixels (the actual
+  // backing-buffer size, winW * resolution) per PixiJS's own doc comment
+  // ("actual number of pixels in the canvas") — comparing winH against
+  // that directly would almost always be false whenever resolution != 1,
+  // making this guard never skip and re-run the resize/reposition logic
+  // on every single playAnim call needlessly.
+  if (winW === currentWinWidth && winH === currentWinHeight) return;
   currentWinWidth = winW;
+  currentWinHeight = winH;
 
   window.peonBridge.resizePet({ width: winW, height: winH });
   document.documentElement.style.width = `${winW}px`;
   document.documentElement.style.height = `${winH}px`;
   document.body.style.width = `${winW}px`;
   document.body.style.height = `${winH}px`;
+  // PIXI.Renderer#resize only resizes the backing drawing buffer (to
+  // winW/winH * resolution device pixels) — unlike Three.js's
+  // WebGLRenderer#setSize (the previous engine), it does NOT set the
+  // canvas element's CSS box size. Without this, the canvas displays at
+  // its intrinsic device-pixel dimensions as a CSS size (e.g. 466x458
+  // instead of 233x229 at resolution:2), showing only an unscaled corner
+  // of the composited scene instead of the whole thing scaled to fit.
+  canvas.style.width = `${winW}px`;
+  canvas.style.height = `${winH}px`;
   app.renderer.resize(winW, winH);
 
   const main = player.mainSprite;

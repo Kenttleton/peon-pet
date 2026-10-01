@@ -354,6 +354,20 @@ describe('createPlayer', () => {
     }
   });
 
+  test('initScene loads and applies a texture to bg/border sprites (regression: they were created but left textureless, so a pack with a border rendered nothing for it)', async () => {
+    const player = createPlayer(makeFakePixiApp(), makePlayerDeps());
+    await player.initScene(makeConfig({
+      assets: {
+        bg: { url: 'peon-asset://asset/bg' },
+        borders: { url: 'peon-asset://asset/border' },
+      },
+    }));
+    expect(player.bgSprite.texture).not.toBeNull();
+    expect(player.bgSprite.texture.url).toBe('peon-asset://asset/bg');
+    expect(player.borderSprite.texture).not.toBeNull();
+    expect(player.borderSprite.texture.url).toBe('peon-asset://asset/border');
+  });
+
   test('initScene destroys every previously-created sprite (main/bg/border) on a pack switch (uniform teardown)', async () => {
     const pixiApp = makeFakePixiApp();
     const player = createPlayer(pixiApp, makePlayerDeps());

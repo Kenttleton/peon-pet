@@ -286,15 +286,32 @@ export function createPlayer(pixiApp, options = {}) {
     if (bgAsset) {
       bgSprite = createSprite();
       pixiApp.stage.addChild(bgSprite);
+      applyStaticAssetTexture(bgSprite, bgAsset, myGeneration);
     }
     if (borderAsset) {
       borderSprite = createSprite();
       pixiApp.stage.addChild(borderSprite);
+      applyStaticAssetTexture(borderSprite, borderAsset, myGeneration);
     }
     mainSprite = createSprite();
     pixiApp.stage.addChild(mainSprite);
 
     return playAnim('sleeping', myGeneration);
+  }
+
+  // bg/border assets are (today) always static single-frame images — the
+  // original renderer/app.js only ever loaded them once via a plain
+  // loadTexture(url) with no frame advancement (app.js:401-427), matching
+  // the CEAP spec's common case (docs/ceap-spec.md's "borders": { "file":
+  // "borders.png" } examples, row:0/rows:1/frames:1 implied by omission).
+  // The spec also allows an animated border/bg (frames/fps/loop fields),
+  // but neither this rewrite nor the original it replaces implements
+  // advancing those frames — out of scope here, same as before.
+  async function applyStaticAssetTexture(sprite, asset, generation) {
+    if (!textureLoader) return;
+    const texture = await textureLoader.loadFrame(caches, asset.url, asset.row ?? 0, asset.rows ?? 1, asset.frames ?? 1, 0);
+    if (generation !== sceneGeneration) return; // superseded by a later initScene/pack switch
+    sprite.texture = texture;
   }
 
   function playAnim(animName, generationAtCallTime) {
