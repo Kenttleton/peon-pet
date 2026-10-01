@@ -14,6 +14,7 @@ const { migrateLegacyCharacters } = require('./lib/ceap-migration');
 const { computeWindowSize } = require('./lib/pet-size');
 const { ConfigManager } = require('./lib/config-manager');
 const { WindowManager, createMainWindowState, createTooltipWindowState, createSubAgentWindowState } = require('./lib/window-manager');
+const { withCacheHeaders } = require('./lib/asset-headers');
 
 const cfgMgr = new ConfigManager();
 
@@ -258,13 +259,14 @@ function registerPetProtocol(cfg) {
   // Every token this protocol is ever asked for was minted by toAssetUrl()
   // from a path inside resolvedPack, in this same process — the renderer
   // never constructs one itself, so a miss here means a stale/foreign URL.
-  protocol.handle('peon-asset', (request) => {
+  protocol.handle('peon-asset', async (request) => {
     const token = new URL(request.url).pathname.replace(/^\//, '');
     const absPath = assetPathsByToken.get(token);
     if (!absPath) {
       return new Response('Not found', { status: 404 });
     }
-    return net.fetch('file://' + absPath);
+    const response = await net.fetch('file://' + absPath);
+    return withCacheHeaders(response);
   });
 
   return packInfo;
