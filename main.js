@@ -15,7 +15,7 @@ const { computeWindowSize } = require('./lib/pet-size');
 const { ConfigManager } = require('./lib/config-manager');
 const { WindowManager, createMainWindowState, createTooltipWindowState, createSubAgentWindowState } = require('./lib/window-manager');
 const { withCacheHeaders } = require('./lib/asset-headers');
-const { initLogger } = require('./lib/logger');
+const { initLogger, tagConsoleMessages } = require('./lib/logger');
 
 const cfgMgr = new ConfigManager();
 
@@ -80,6 +80,7 @@ function ensureTooltipWindow() {
     },
   });
   tooltipWin.setIgnoreMouseEvents(true);
+  tagConsoleMessages(tooltipWin.webContents, 'tooltip');
   tooltipWin.loadFile('renderer/tooltip.html');
   wm.register('tooltip', tooltipWin, createTooltipWindowState('main'));
   return tooltipWin;
@@ -336,6 +337,7 @@ function createSubAgentWindow(sessionId) {
   });
 
   subWin.setIgnoreMouseEvents(true);
+  tagConsoleMessages(subWin.webContents, `subagent:${sessionId}`);
 
   subWin.loadFile('renderer/index.html');
 
@@ -748,6 +750,7 @@ function createWindow() {
   });
 
   win.setIgnoreMouseEvents(true);
+  tagConsoleMessages(win.webContents, 'main');
 
   win.loadFile('renderer/index.html');
 
