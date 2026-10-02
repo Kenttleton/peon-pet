@@ -18,6 +18,7 @@ const { withCacheHeaders } = require('./lib/asset-headers');
 const { initLogger, tagConsoleMessages } = require('./lib/logger');
 
 const cfgMgr = new ConfigManager();
+const IS_DEV = process.argv.includes('--dev');
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -339,7 +340,7 @@ function createSubAgentWindow(sessionId) {
   subWin.setIgnoreMouseEvents(true);
   tagConsoleMessages(subWin.webContents, `subagent:${sessionId}`);
 
-  subWin.loadFile('renderer/index.html');
+  subWin.loadFile('renderer/index.html', IS_DEV ? { query: { debug: '1' } } : undefined);
 
   subWin.webContents.once('did-finish-load', () => {
     subWin.webContents.send('peon-config', {
@@ -752,11 +753,11 @@ function createWindow() {
   win.setIgnoreMouseEvents(true);
   tagConsoleMessages(win.webContents, 'main');
 
-  win.loadFile('renderer/index.html');
+  win.loadFile('renderer/index.html', IS_DEV ? { query: { debug: '1' } } : undefined);
 
   wm.register('main', win, createMainWindowState(x, y, petW, petH));
 
-  if (process.argv.includes('--dev')) {
+  if (IS_DEV) {
     win.webContents.openDevTools({ mode: 'detach' });
   }
 
