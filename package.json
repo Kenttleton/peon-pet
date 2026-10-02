@@ -52,6 +52,7 @@
   },
   "dependencies": {
     "commander": "^15.0.0",
+    "electron-log": "^5.4.4",
     "pixi.js": "^8.21.0"
   },
   "devDependencies": {

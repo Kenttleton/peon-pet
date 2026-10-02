@@ -15,6 +15,7 @@ const { computeWindowSize } = require('./lib/pet-size');
 const { ConfigManager } = require('./lib/config-manager');
 const { WindowManager, createMainWindowState, createTooltipWindowState, createSubAgentWindowState } = require('./lib/window-manager');
 const { withCacheHeaders } = require('./lib/asset-headers');
+const { initLogger } = require('./lib/logger');
 
 const cfgMgr = new ConfigManager();
 
@@ -844,6 +845,9 @@ if (!gotLock) {
   app.quit();
 } else {
   app.whenReady().then(() => {
+    const log = initLogger(app);
+    log.info('peon-pet starting', { version: app.getVersion(), argv: process.argv.slice(1) });
+
     const legacyCharactersDir = path.join(app.getPath('userData'), 'characters');
     const petsDir = path.join(os.homedir(), '.openpeon', 'pets');
     migrateLegacyCharacters(legacyCharactersDir, petsDir);
